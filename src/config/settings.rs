@@ -1,7 +1,10 @@
+// Public API is wired into App in Task 5; until then this entire module
+// would otherwise trip dead-code under -D warnings.
 #![allow(dead_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -66,16 +69,23 @@ pub fn load_from(p: &Path) -> LoadedSettings {
                 warning: None,
             },
             Err(e) => {
-                let bad = p.with_extension("toml.bad");
-                let _ = fs::rename(p, &bad);
-                LoadedSettings {
-                    settings: Settings::default(),
-                    warning: Some(format!(
+                let warning = match quarantine(p) {
+                    Ok(backup) => format!(
                         "settings file at {} failed to parse ({}); quarantined to {}, using defaults",
                         p.display(),
                         e,
-                        bad.display(),
-                    )),
+                        backup.display(),
+                    ),
+                    Err(qe) => format!(
+                        "settings file at {} failed to parse ({}); failed to quarantine: {}, using defaults",
+                        p.display(),
+                        e,
+                        qe,
+                    ),
+                };
+                LoadedSettings {
+                    settings: Settings::default(),
+                    warning: Some(warning),
                 }
             }
         },
@@ -96,10 +106,27 @@ pub fn save_to(p: &Path, s: &Settings) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let text = toml::to_string_pretty(s)?;
-    let tmp = p.with_extension("toml.tmp");
+    let mut tmp = p.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
     fs::write(&tmp, text)?;
-    fs::rename(&tmp, p)?;
+    if let Err(e) = fs::rename(&tmp, p) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
+}
+
+fn quarantine(path: &Path) -> Result<PathBuf> {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(format!(".corrupt-{}", ts));
+    let backup = PathBuf::from(backup);
+    fs::rename(path, &backup)?;
+    Ok(backup)
 }
 
 #[cfg(test)]
@@ -109,19 +136,22 @@ mod tests {
 
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-    fn unique_path() -> PathBuf {
+    fn unique_tempdir() -> PathBuf {
         let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "nerdterm-settings-test-{}-{}.toml",
+        let dir = std::env::temp_dir().join(format!(
+            "nerdterm-settings-test-{}-{}",
             std::process::id(),
             n
-        ))
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
     fn missing_file_returns_defaults_silently() {
-        let p = unique_path();
-        let _ = fs::remove_file(&p);
+        let dir = unique_tempdir();
+        let p = dir.join("settings.toml");
         let loaded = load_from(&p);
         assert_eq!(loaded.settings.scrollback_lines, 1000);
         assert_eq!(loaded.settings.default_input_mode, InputMode::LineBuffered);
@@ -131,29 +161,30 @@ mod tests {
 
     #[test]
     fn empty_file_returns_defaults_silently() {
-        let p = unique_path();
+        let dir = unique_tempdir();
+        let p = dir.join("settings.toml");
         fs::write(&p, "").unwrap();
         let loaded = load_from(&p);
         assert_eq!(loaded.settings.scrollback_lines, 1000);
         assert!(loaded.warning.is_none());
-        let _ = fs::remove_file(&p);
     }
 
     #[test]
     fn partial_file_fills_unspecified_fields_from_defaults() {
-        let p = unique_path();
+        let dir = unique_tempdir();
+        let p = dir.join("settings.toml");
         fs::write(&p, "scrollback_lines = 5000\n").unwrap();
         let loaded = load_from(&p);
         assert_eq!(loaded.settings.scrollback_lines, 5000);
         assert_eq!(loaded.settings.default_input_mode, InputMode::LineBuffered);
         assert_eq!(loaded.settings.terminal_type, "xterm-256color");
         assert!(loaded.warning.is_none());
-        let _ = fs::remove_file(&p);
     }
 
     #[test]
     fn input_mode_accepts_line_and_character_strings() {
-        let p = unique_path();
+        let dir = unique_tempdir();
+        let p = dir.join("settings.toml");
         fs::write(&p, "default_input_mode = \"character\"\n").unwrap();
         assert_eq!(
             load_from(&p).settings.default_input_mode,
@@ -164,32 +195,38 @@ mod tests {
             load_from(&p).settings.default_input_mode,
             InputMode::LineBuffered
         );
-        let _ = fs::remove_file(&p);
     }
 
     #[test]
     fn corrupt_file_is_quarantined_and_warning_returned() {
-        let p = unique_path();
+        let dir = unique_tempdir();
+        let p = dir.join("settings.toml");
         fs::write(&p, "scrollback_lines = \"not a number\"\n").unwrap();
+        let original_bytes = fs::read(&p).unwrap();
+
         let loaded = load_from(&p);
         assert_eq!(loaded.settings.scrollback_lines, 1000);
         assert!(
             loaded.warning.is_some(),
             "expected a warning for corrupt file"
         );
-        let bad = p.with_extension("toml.bad");
         assert!(
-            bad.exists(),
-            "expected quarantine file at {}",
-            bad.display()
+            !p.exists(),
+            "corrupt file must be moved aside; still found at {}",
+            p.display(),
         );
-        let _ = fs::remove_file(&p);
-        let _ = fs::remove_file(&bad);
+        let preserved = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).any(|e| {
+            fs::read(e.path())
+                .map(|b| b == original_bytes)
+                .unwrap_or(false)
+        });
+        assert!(preserved, "original bytes must be preserved on disk");
     }
 
     #[test]
     fn save_then_load_roundtrips() {
-        let p = unique_path();
+        let dir = unique_tempdir();
+        let p = dir.join("settings.toml");
         let s = Settings {
             scrollback_lines: 4242,
             default_input_mode: InputMode::Character,
@@ -201,15 +238,22 @@ mod tests {
         assert_eq!(loaded.settings.default_input_mode, InputMode::Character);
         assert_eq!(loaded.settings.terminal_type, "ANSI");
         assert!(loaded.warning.is_none());
-        let _ = fs::remove_file(&p);
     }
 
     #[test]
     fn save_does_not_leave_tmp_files_behind() {
-        let p = unique_path();
+        let dir = unique_tempdir();
+        let p = dir.join("settings.toml");
         save_to(&p, &Settings::default()).unwrap();
-        let tmp = p.with_extension("toml.tmp");
-        assert!(!tmp.exists(), "tmp file leaked at {}", tmp.display());
-        let _ = fs::remove_file(&p);
+        let entries: Vec<PathBuf> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![p.clone()],
+            "expected only the target file, found {:?}",
+            entries,
+        );
     }
 }
