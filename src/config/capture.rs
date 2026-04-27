@@ -2,14 +2,13 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 /// Resolves the directory where session capture files are written.
 /// Linux: `~/.config/nerdterm/sessions/`
 /// macOS: `~/Library/Application Support/nerdterm/sessions/`
 pub fn dir() -> Result<PathBuf> {
-    let cfg = dirs::config_dir()
-        .ok_or_else(|| anyhow!("Could not determine config directory"))?;
+    let cfg = dirs::config_dir().ok_or_else(|| anyhow!("Could not determine config directory"))?;
     Ok(cfg.join("nerdterm").join("sessions"))
 }
 
@@ -111,11 +110,7 @@ pub fn open_in(dir: &Path, entry_name: &str, host: &str, port: u16) -> Result<Ca
     // racing did happen, `create_new` would surface EEXIST as a
     // fail-loud error to the user.
     let path = next_available_path(dir, &base)?;
-    let mut file = match OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&path)
-    {
+    let mut file = match OpenOptions::new().create_new(true).write(true).open(&path) {
         Ok(f) => f,
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
             return Err(anyhow!(
@@ -152,8 +147,8 @@ mod tests {
 
     fn unique_tempdir() -> PathBuf {
         let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir()
-            .join(format!("nerdterm-cap-test-{}-{}", std::process::id(), n));
+        let dir =
+            std::env::temp_dir().join(format!("nerdterm-cap-test-{}-{}", std::process::id(), n));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -289,7 +284,10 @@ mod tests {
         let blocker = dir.join("blocker");
         fs::write(&blocker, "not a dir").unwrap();
         let result = open_in(&blocker, "x", "h", 22);
-        assert!(result.is_err(), "open_in must fail when target is not a directory");
+        assert!(
+            result.is_err(),
+            "open_in must fail when target is not a directory"
+        );
     }
 
     #[test]
@@ -297,12 +295,17 @@ mod tests {
         let dir = unique_tempdir();
         let cap1 = open_in(&dir, "same", "h", 22).unwrap();
         let cap2 = open_in(&dir, "same", "h", 22).unwrap();
-        assert_ne!(cap1.path(), cap2.path(), "second capture must get a unique path");
+        assert_ne!(
+            cap1.path(),
+            cap2.path(),
+            "second capture must get a unique path"
+        );
         // the second one ends in _2.log
         let name2 = cap2.path().file_name().unwrap().to_str().unwrap();
         assert!(
             name2.ends_with("_2.log"),
-            "expected _2.log suffix, got {}", name2,
+            "expected _2.log suffix, got {}",
+            name2,
         );
     }
 
@@ -316,12 +319,16 @@ mod tests {
         // The TZ offset is either +HH:MM, -HH:MM, or Z (UTC). chrono's RFC3339 picks the form.
         let tail = header.trim_end_matches('\n');
         let last_word = tail.rsplit(' ').next().unwrap();
-        let ok = last_word.ends_with('Z')
-            || last_word.contains('+')
-            || last_word[1..].contains('-'); // skip the leading 'T...HH:' parts; the offset will have a sign
+        let ok =
+            last_word.ends_with('Z') || last_word.contains('+') || last_word[1..].contains('-'); // skip the leading 'T...HH:' parts; the offset will have a sign
         assert!(ok, "header tail does not look ISO-8601: {:?}", tail);
         // also: the date portion is dash-separated YYYY-MM-DD
         let date_part = last_word.split('T').next().unwrap();
-        assert_eq!(date_part.len(), 10, "expected YYYY-MM-DD, got {:?}", date_part);
+        assert_eq!(
+            date_part.len(),
+            10,
+            "expected YYYY-MM-DD, got {:?}",
+            date_part
+        );
     }
 }

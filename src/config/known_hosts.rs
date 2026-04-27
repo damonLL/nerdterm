@@ -36,19 +36,15 @@ pub struct LoadResult {
 }
 
 impl KnownHosts {
-    pub fn verify(
-        &self,
-        host: &str,
-        port: u16,
-        key_type: &str,
-        fingerprint: &str,
-    ) -> Verdict {
+    pub fn verify(&self, host: &str, port: u16, key_type: &str, fingerprint: &str) -> Verdict {
         for entry in &self.entries {
             if entry.host == host && entry.port == port && entry.key_type == key_type {
                 if entry.fingerprint == fingerprint {
                     return Verdict::Trusted;
                 }
-                return Verdict::Mismatch { stored: entry.fingerprint.clone() };
+                return Verdict::Mismatch {
+                    stored: entry.fingerprint.clone(),
+                };
             }
         }
         Verdict::Unknown
@@ -82,7 +78,10 @@ pub fn save(kh: &KnownHosts) -> Result<()> {
 
 pub fn load_from(path: &Path) -> LoadResult {
     if !path.exists() {
-        return LoadResult { known_hosts: KnownHosts::default(), warning: None };
+        return LoadResult {
+            known_hosts: KnownHosts::default(),
+            warning: None,
+        };
     }
 
     let contents = match fs::read_to_string(path) {
@@ -97,21 +96,30 @@ pub fn load_from(path: &Path) -> LoadResult {
 
     match toml::from_str::<KnownHostsFile>(&contents) {
         Ok(file) => LoadResult {
-            known_hosts: KnownHosts { entries: file.hosts },
+            known_hosts: KnownHosts {
+                entries: file.hosts,
+            },
             warning: None,
         },
         Err(parse_err) => {
             let warning = match quarantine(path) {
                 Ok(backup) => format!(
                     "Could not parse {}: {}. Saved corrupt copy to {}.",
-                    path.display(), parse_err, backup.display(),
+                    path.display(),
+                    parse_err,
+                    backup.display(),
                 ),
                 Err(e) => format!(
                     "Could not parse {}: {}. Failed to back it up: {}.",
-                    path.display(), parse_err, e,
+                    path.display(),
+                    parse_err,
+                    e,
                 ),
             };
-            LoadResult { known_hosts: KnownHosts::default(), warning: Some(warning) }
+            LoadResult {
+                known_hosts: KnownHosts::default(),
+                warning: Some(warning),
+            }
         }
     }
 }
@@ -120,7 +128,9 @@ pub fn save_to(path: &Path, kh: &KnownHosts) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let file = KnownHostsFile { hosts: kh.entries.clone() };
+    let file = KnownHostsFile {
+        hosts: kh.entries.clone(),
+    };
     let contents = toml::to_string_pretty(&file)?;
 
     let mut tmp = path.as_os_str().to_owned();
@@ -204,7 +214,9 @@ mod tests {
         kh.add(entry("h", 22, "ssh-ed25519", "SHA256:abc"));
         assert_eq!(
             kh.verify("h", 22, "ssh-ed25519", "SHA256:xyz"),
-            Verdict::Mismatch { stored: "SHA256:abc".into() },
+            Verdict::Mismatch {
+                stored: "SHA256:abc".into()
+            },
         );
     }
 
@@ -225,8 +237,8 @@ mod tests {
 
     fn unique_tempdir() -> PathBuf {
         let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir()
-            .join(format!("nerdterm-kh-test-{}-{}", std::process::id(), n));
+        let dir =
+            std::env::temp_dir().join(format!("nerdterm-kh-test-{}-{}", std::process::id(), n));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -273,8 +285,10 @@ mod tests {
             .filter_map(|e| e.ok().map(|e| e.path()))
             .collect();
         assert_eq!(
-            entries, vec![path.clone()],
-            "expected only the target file, found {:?}", entries,
+            entries,
+            vec![path.clone()],
+            "expected only the target file, found {:?}",
+            entries,
         );
     }
 
@@ -290,10 +304,11 @@ mod tests {
         assert!(result.known_hosts.entries.is_empty());
         assert!(result.warning.is_some(), "corrupt file MUST warn");
         assert!(!path.exists(), "corrupt file must be moved aside");
-        let preserved = fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .any(|e| fs::read(e.path()).map(|b| b == original_bytes).unwrap_or(false));
+        let preserved = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).any(|e| {
+            fs::read(e.path())
+                .map(|b| b == original_bytes)
+                .unwrap_or(false)
+        });
         assert!(preserved, "original bytes must be preserved on disk");
     }
 }

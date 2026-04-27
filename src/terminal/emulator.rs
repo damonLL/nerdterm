@@ -94,7 +94,8 @@ mod tests {
             // (the renderer reads cells from scrollback through it).
         }
         assert_eq!(
-            vt_scrollback(&e), 0,
+            vt_scrollback(&e),
+            0,
             "vt scrollback must reset to 0 when guard drops",
         );
     }

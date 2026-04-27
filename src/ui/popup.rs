@@ -38,12 +38,22 @@ fn draw_chord_help(f: &mut Frame) {
         Line::from(""),
         Line::from(vec![
             Span::raw("  "),
-            Span::styled("l", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "l",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("    Toggle session capture (log)"),
         ]),
         Line::from(vec![
             Span::raw("  "),
-            Span::styled("?", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "?",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("    This help"),
         ]),
         Line::from(""),
@@ -53,9 +63,7 @@ fn draw_chord_help(f: &mut Frame) {
         ]),
     ];
 
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .alignment(Alignment::Left);
+    let paragraph = Paragraph::new(text).block(block).alignment(Alignment::Left);
     f.render_widget(paragraph, area);
 }
 
@@ -81,16 +89,22 @@ fn draw_host_key_trust(f: &mut Frame, popup: &crate::app::HostKeyTrustPopup) {
         Line::from(""),
         Line::from(vec![
             Span::raw("Trust and connect? ["),
-            Span::styled("y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "y",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("/"),
-            Span::styled("N", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "N",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("]"),
         ]),
     ];
 
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .alignment(Alignment::Left);
+    let paragraph = Paragraph::new(text).block(block).alignment(Alignment::Left);
     f.render_widget(paragraph, area);
 }
 
@@ -106,9 +120,17 @@ fn draw_delete_confirm(f: &mut Frame) {
     let text = vec![
         Line::from("Delete this entry?"),
         Line::from(vec![
-            Span::styled(" Y ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " Y ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Yes  "),
-            Span::styled(" N ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " N ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("No"),
         ]),
     ];
@@ -146,14 +168,12 @@ fn draw_password_prompt(f: &mut Frame, password_input: &str) {
     let input_x = chunks[0].x + LABEL_WIDTH + password_input.len() as u16;
     f.set_cursor_position((input_x, chunks[0].y));
 
-    let help = Paragraph::new(
-        Line::from(vec![
-            Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" submit  "),
-            Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" cancel"),
-        ])
-    )
+    let help = Paragraph::new(Line::from(vec![
+        Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" submit  "),
+        Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" cancel"),
+    ]))
     .alignment(Alignment::Center)
     .style(Style::default().fg(Color::DarkGray));
     f.render_widget(help, chunks[1]);
@@ -187,9 +207,27 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
         ])
         .split(inner);
 
-    draw_field(f, "Name:", &popup.name, popup.focused == PopupField::Name, fields[0]);
-    draw_field(f, "Host:", &popup.host, popup.focused == PopupField::Host, fields[1]);
-    draw_field(f, "Port:", &popup.port_str, popup.focused == PopupField::Port, fields[2]);
+    draw_field(
+        f,
+        "Name:",
+        &popup.name,
+        popup.focused == PopupField::Name,
+        fields[0],
+    );
+    draw_field(
+        f,
+        "Host:",
+        &popup.host,
+        popup.focused == PopupField::Host,
+        fields[1],
+    );
+    draw_field(
+        f,
+        "Port:",
+        &popup.port_str,
+        popup.focused == PopupField::Port,
+        fields[2],
+    );
 
     // Protocol toggle field
     let proto_active = popup.focused == PopupField::Protocol;
@@ -205,29 +243,46 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
     };
     let proto_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(LABEL_WIDTH),
-            Constraint::Min(1),
-        ])
+        .constraints([Constraint::Length(LABEL_WIDTH), Constraint::Min(1)])
         .split(fields[3]);
     let proto_label = Paragraph::new("Type:").style(proto_style);
-    f.render_widget(proto_label, Rect::new(proto_chunks[0].x, proto_chunks[0].y, proto_chunks[0].width, 1));
+    f.render_widget(
+        proto_label,
+        Rect::new(
+            proto_chunks[0].x,
+            proto_chunks[0].y,
+            proto_chunks[0].width,
+            1,
+        ),
+    );
     let proto_text = format!("{} (Space to toggle)", popup.protocol);
     let proto_widget = Paragraph::new(proto_text).style(proto_value_style);
-    f.render_widget(proto_widget, Rect::new(proto_chunks[1].x, proto_chunks[1].y, proto_chunks[1].width, 1));
+    f.render_widget(
+        proto_widget,
+        Rect::new(
+            proto_chunks[1].x,
+            proto_chunks[1].y,
+            proto_chunks[1].width,
+            1,
+        ),
+    );
 
-    draw_field(f, "User:", &popup.username, popup.focused == PopupField::Username, fields[4]);
+    draw_field(
+        f,
+        "User:",
+        &popup.username,
+        popup.focused == PopupField::Username,
+        fields[4],
+    );
 
-    let help = Paragraph::new(
-        Line::from(vec![
-            Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" next  "),
-            Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" save  "),
-            Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" cancel"),
-        ])
-    )
+    let help = Paragraph::new(Line::from(vec![
+        Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" next  "),
+        Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" save  "),
+        Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" cancel"),
+    ]))
     .alignment(Alignment::Center)
     .style(Style::default().fg(Color::DarkGray));
     f.render_widget(help, fields[5]);
@@ -242,14 +297,14 @@ fn draw_field(f: &mut Frame, label: &str, value: &str, active: bool, area: Rect)
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(LABEL_WIDTH),
-            Constraint::Min(1),
-        ])
+        .constraints([Constraint::Length(LABEL_WIDTH), Constraint::Min(1)])
         .split(area);
 
     let label_widget = Paragraph::new(label).style(style);
-    f.render_widget(label_widget, Rect::new(chunks[0].x, chunks[0].y, chunks[0].width, 1));
+    f.render_widget(
+        label_widget,
+        Rect::new(chunks[0].x, chunks[0].y, chunks[0].width, 1),
+    );
 
     let input_style = if active {
         Style::default().bg(Color::DarkGray).fg(Color::White)
@@ -268,9 +323,6 @@ fn draw_field(f: &mut Frame, label: &str, value: &str, active: bool, area: Rect)
     f.render_widget(input_widget, input_area);
 
     if active {
-        f.set_cursor_position((
-            input_area.x + value.len() as u16,
-            input_area.y,
-        ));
+        f.set_cursor_position((input_area.x + value.len() as u16, input_area.y));
     }
 }

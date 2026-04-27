@@ -14,10 +14,7 @@ fn menu_item<'a>(key: &'a str, label: &'a str) -> Line<'a> {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" {} ", label),
-            Style::default().fg(Color::White),
-        ),
+        Span::styled(format!(" {} ", label), Style::default().fg(Color::White)),
     ])
 }
 
@@ -98,7 +95,15 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     // Menu bar — show context-sensitive options
     let mut menu_items: Vec<Vec<Span>> = vec![
-        menu_item("Enter", if app.connected_entry == Some(app.selected) { "Resume" } else { "Connect" }).spans,
+        menu_item(
+            "Enter",
+            if app.connected_entry == Some(app.selected) {
+                "Resume"
+            } else {
+                "Connect"
+            },
+        )
+        .spans,
         menu_item("A", "Add").spans,
         menu_item("E", "Edit").spans,
         menu_item("D", "Delete").spans,
@@ -108,16 +113,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     menu_items.push(menu_item("Q", "Quit").spans);
 
-    let menu = Line::from(
-        menu_items
-            .into_iter()
-            .flatten()
-            .collect::<Vec<Span>>(),
-    )
-    .alignment(Alignment::Center);
+    let menu = Line::from(menu_items.into_iter().flatten().collect::<Vec<Span>>())
+        .alignment(Alignment::Center);
 
-    let menu_bar = Paragraph::new(menu)
-        .style(Style::default().bg(Color::DarkGray));
+    let menu_bar = Paragraph::new(menu).style(Style::default().bg(Color::DarkGray));
     f.render_widget(menu_bar, chunks[2]);
 
     // Status line

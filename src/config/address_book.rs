@@ -40,7 +40,10 @@ pub fn save(entries: &[AddressBookEntry]) -> Result<()> {
 
 pub fn load_from(path: &Path) -> LoadResult {
     if !path.exists() {
-        return LoadResult { entries: default_entries(), warning: None };
+        return LoadResult {
+            entries: default_entries(),
+            warning: None,
+        };
     }
 
     let contents = match fs::read_to_string(path) {
@@ -54,24 +57,35 @@ pub fn load_from(path: &Path) -> LoadResult {
     };
 
     match toml::from_str::<AddressBookFile>(&contents) {
-        Ok(file) if file.entries.is_empty() => {
-            LoadResult { entries: default_entries(), warning: None }
-        }
-        Ok(file) => LoadResult { entries: file.entries, warning: None },
+        Ok(file) if file.entries.is_empty() => LoadResult {
+            entries: default_entries(),
+            warning: None,
+        },
+        Ok(file) => LoadResult {
+            entries: file.entries,
+            warning: None,
+        },
         Err(parse_err) => {
             // Quarantine the corrupt file before returning defaults — otherwise
             // the next save() would silently destroy the user's data.
             let warning = match quarantine(path) {
                 Ok(backup) => format!(
                     "Could not parse {}: {}. Saved corrupt copy to {}.",
-                    path.display(), parse_err, backup.display(),
+                    path.display(),
+                    parse_err,
+                    backup.display(),
                 ),
                 Err(e) => format!(
                     "Could not parse {}: {}. Failed to back it up: {}.",
-                    path.display(), parse_err, e,
+                    path.display(),
+                    parse_err,
+                    e,
                 ),
             };
-            LoadResult { entries: default_entries(), warning: Some(warning) }
+            LoadResult {
+                entries: default_entries(),
+                warning: Some(warning),
+            }
         }
     }
 }
@@ -80,7 +94,9 @@ pub fn save_to(path: &Path, entries: &[AddressBookEntry]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let file = AddressBookFile { entries: entries.to_vec() };
+    let file = AddressBookFile {
+        entries: entries.to_vec(),
+    };
     let contents = toml::to_string_pretty(&file)?;
 
     // Write+rename: a crash mid-write leaves the original `path` intact
@@ -151,8 +167,7 @@ mod tests {
 
     fn unique_tempdir() -> PathBuf {
         let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir()
-            .join(format!("nerdterm-test-{}-{}", std::process::id(), n));
+        let dir = std::env::temp_dir().join(format!("nerdterm-test-{}-{}", std::process::id(), n));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -205,10 +220,11 @@ mod tests {
             "malformed file must be moved aside, found it still at {}",
             path.display(),
         );
-        let preserved = fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .any(|e| fs::read(e.path()).map(|b| b == original_bytes).unwrap_or(false));
+        let preserved = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).any(|e| {
+            fs::read(e.path())
+                .map(|b| b == original_bytes)
+                .unwrap_or(false)
+        });
         assert!(preserved, "original bytes must be preserved on disk");
     }
 
@@ -238,8 +254,10 @@ mod tests {
             .filter_map(|e| e.ok().map(|e| e.path()))
             .collect();
         assert_eq!(
-            entries, vec![path.clone()],
-            "expected only the target file, found {:?}", entries,
+            entries,
+            vec![path.clone()],
+            "expected only the target file, found {:?}",
+            entries,
         );
     }
 

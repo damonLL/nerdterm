@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use russh::client;
-use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
+use russh::keys::{PrivateKeyWithHashAlg, load_secret_key};
 use tokio::sync::mpsc;
 
 use crate::events::{AppEvent, ConnectionCommand};
@@ -100,9 +100,9 @@ fn find_private_keys() -> Vec<Arc<russh::keys::PrivateKey>> {
     for name in &key_files {
         let path = ssh_dir.join(name);
         if path.exists() {
-            match load_secret_key(&path, None) {
-                Ok(key) => keys.push(Arc::new(key)),
-                Err(_) => {} // encrypted or unreadable, skip
+            // encrypted or unreadable keys: skip silently
+            if let Ok(key) = load_secret_key(&path, None) {
+                keys.push(Arc::new(key));
             }
         }
     }
@@ -119,8 +119,15 @@ pub async fn connect_ssh(
     event_tx: mpsc::Sender<AppEvent>,
 ) {
     let result = connect_ssh_inner(
-        &host, port, username.as_deref(), cols, rows, connection_id, &event_tx,
-    ).await;
+        &host,
+        port,
+        username.as_deref(),
+        cols,
+        rows,
+        connection_id,
+        &event_tx,
+    )
+    .await;
 
     if let Err(e) = result {
         let _ = event_tx
@@ -151,11 +158,8 @@ async fn connect_ssh_inner(
         connection_id,
         event_tx: event_tx.clone(),
     };
-    let mut handle = client::connect(
-        Arc::new(config),
-        format!("{}:{}", host, port),
-        handler,
-    ).await?;
+    let mut handle =
+        client::connect(Arc::new(config), format!("{}:{}", host, port), handler).await?;
 
     let user = username.unwrap_or("root");
 
@@ -209,15 +213,7 @@ async fn connect_ssh_inner(
 
     // Request PTY
     channel
-        .request_pty(
-            true,
-            "xterm-256color",
-            cols as u32,
-            rows as u32,
-            0,
-            0,
-            &[],
-        )
+        .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
         .await?;
 
     // Request shell
@@ -254,7 +250,9 @@ async fn connect_ssh_inner(
                     }
                 }
                 ConnectionCommand::Resize(new_cols, new_rows) => {
-                    let _ = writer.window_change(new_cols as u32, new_rows as u32, 0, 0).await;
+                    let _ = writer
+                        .window_change(new_cols as u32, new_rows as u32, 0, 0)
+                        .await;
                 }
                 ConnectionCommand::Disconnect => {
                     let _ = writer.eof().await;

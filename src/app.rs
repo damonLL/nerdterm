@@ -1,8 +1,11 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
-use crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+    MouseEventKind,
+};
 use tokio::sync::mpsc;
 
 use crate::config;
@@ -135,11 +138,15 @@ impl FormPopup {
     pub fn toggle_protocol(&mut self) {
         self.protocol = match self.protocol {
             Protocol::Telnet => {
-                if self.port_str == "23" { self.port_str = "22".into(); }
+                if self.port_str == "23" {
+                    self.port_str = "22".into();
+                }
                 Protocol::Ssh
             }
             Protocol::Ssh => {
-                if self.port_str == "22" { self.port_str = "23".into(); }
+                if self.port_str == "22" {
+                    self.port_str = "23".into();
+                }
                 Protocol::Telnet
             }
         };
@@ -155,7 +162,11 @@ impl FormPopup {
             host: self.host.clone(),
             port,
             protocol: self.protocol,
-            username: if self.username.is_empty() { None } else { Some(self.username.clone()) },
+            username: if self.username.is_empty() {
+                None
+            } else {
+                Some(self.username.clone())
+            },
         })
     }
 
@@ -217,7 +228,7 @@ pub struct App {
     history: Vec<String>,
     history_index: Option<usize>, // None = typing new input, Some(i) = browsing history
     history_draft: String,        // saves in-progress input when browsing history
-    char_input_len: usize, // tracks typed chars on current line in CHAR mode
+    char_input_len: usize,        // tracks typed chars on current line in CHAR mode
     connection_id: u64,
     connection_handle: Option<tokio::task::JoinHandle<()>>,
     password_reply: Option<tokio::sync::oneshot::Sender<String>>,
@@ -363,7 +374,9 @@ impl App {
         match key.code {
             KeyCode::Enter => {
                 let popup = self.popup.take();
-                if let (Some(Popup::Password(pw)), Some(reply)) = (popup, self.password_reply.take()) {
+                if let (Some(Popup::Password(pw)), Some(reply)) =
+                    (popup, self.password_reply.take())
+                {
                     let _ = reply.send(pw);
                 }
             }
@@ -373,10 +386,14 @@ impl App {
                 self.password_reply = None;
             }
             KeyCode::Char(c) => {
-                if let Some(Popup::Password(pw)) = self.popup.as_mut() { pw.push(c); }
+                if let Some(Popup::Password(pw)) = self.popup.as_mut() {
+                    pw.push(c);
+                }
             }
             KeyCode::Backspace => {
-                if let Some(Popup::Password(pw)) = self.popup.as_mut() { pw.pop(); }
+                if let Some(Popup::Password(pw)) = self.popup.as_mut() {
+                    pw.pop();
+                }
             }
             _ => {}
         }
@@ -384,16 +401,14 @@ impl App {
 
     fn handle_key_delete_popup(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                if !self.entries.is_empty() {
-                    let name = self.entries[self.selected].name.clone();
-                    self.entries.remove(self.selected);
-                    if self.selected >= self.entries.len() && self.selected > 0 {
-                        self.selected -= 1;
-                    }
-                    self.status_message = format!("Deleted '{}'", name);
-                    self.save_entries();
+            KeyCode::Char('y') | KeyCode::Char('Y') if !self.entries.is_empty() => {
+                let name = self.entries[self.selected].name.clone();
+                self.entries.remove(self.selected);
+                if self.selected >= self.entries.len() && self.selected > 0 {
+                    self.selected -= 1;
                 }
+                self.status_message = format!("Deleted '{}'", name);
+                self.save_entries();
             }
             _ => {}
         }
@@ -401,16 +416,22 @@ impl App {
     }
 
     fn handle_key_form_popup(&mut self, key: KeyEvent) {
-        let Some(Popup::Form(form)) = self.popup.as_mut() else { return };
+        let Some(Popup::Form(form)) = self.popup.as_mut() else {
+            return;
+        };
         match key.code {
-            KeyCode::Esc => { self.popup = None; }
+            KeyCode::Esc => {
+                self.popup = None;
+            }
             KeyCode::Tab | KeyCode::Down => form.next_field(),
             KeyCode::BackTab | KeyCode::Up => form.prev_field(),
             KeyCode::Char(' ') if form.focused == PopupField::Protocol => form.toggle_protocol(),
             KeyCode::Char(c) => form.type_char(c),
             KeyCode::Backspace => form.backspace(),
             KeyCode::Enter => {
-                let Some(Popup::Form(form)) = self.popup.as_ref() else { return };
+                let Some(Popup::Form(form)) = self.popup.as_ref() else {
+                    return;
+                };
                 let Some(entry) = form.to_entry() else {
                     self.status_message =
                         "Invalid entry (name, host required; port must be a number)".into();
@@ -438,7 +459,11 @@ impl App {
 
     pub async fn handle_app_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
-            AppEvent::Connected { id, cmd_tx, telnet_flags } => {
+            AppEvent::Connected {
+                id,
+                cmd_tx,
+                telnet_flags,
+            } => {
                 if id != self.connection_id {
                     return Ok(()); // stale connection, ignore
                 }
@@ -468,19 +493,19 @@ impl App {
                 // Tee to capture file if active. Fail loud: any write error
                 // closes the file, flips the indicator off, and flashes a
                 // failure message that includes bytes saved + path.
-                if let Some(cap) = self.capture.as_mut() {
-                    if let Err(e) = cap.write(&data) {
-                        let cap = self.capture.take().expect("just borrowed");
-                        let path = cap.path().to_path_buf();
-                        let bytes = cap.bytes_written();
-                        drop(cap);
-                        self.status_message = format!(
-                            "Capture failed: {}; saved {} bytes → {}",
-                            e,
-                            bytes,
-                            path.display()
-                        );
-                    }
+                if let Some(cap) = self.capture.as_mut()
+                    && let Err(e) = cap.write(&data)
+                {
+                    let cap = self.capture.take().expect("just borrowed");
+                    let path = cap.path().to_path_buf();
+                    let bytes = cap.bytes_written();
+                    drop(cap);
+                    self.status_message = format!(
+                        "Capture failed: {}; saved {} bytes → {}",
+                        e,
+                        bytes,
+                        path.display()
+                    );
                 }
             }
             AppEvent::PasswordNeeded { id, reply } => {
@@ -518,7 +543,14 @@ impl App {
                     );
                 }
             }
-            AppEvent::HostKeyTrustNeeded { id, host, port, key_type, fingerprint, reply } => {
+            AppEvent::HostKeyTrustNeeded {
+                id,
+                host,
+                port,
+                key_type,
+                fingerprint,
+                reply,
+            } => {
                 if id != self.connection_id {
                     return Ok(());
                 }
@@ -532,7 +564,13 @@ impl App {
                 self.status_message = format!("Verify host key for {}:{}", host, port);
             }
             AppEvent::HostKeyMismatch {
-                id, host, port, key_type, stored_fingerprint, received_fingerprint, file_path,
+                id,
+                host,
+                port,
+                key_type,
+                stored_fingerprint,
+                received_fingerprint,
+                file_path,
             } => {
                 if id != self.connection_id {
                     return Ok(());
@@ -648,15 +686,11 @@ impl App {
                 self.connected_entry = None;
                 self.quit = true;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if self.selected > 0 => {
+                self.selected -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.selected + 1 < self.entries.len() {
-                    self.selected += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j') if self.selected + 1 < self.entries.len() => {
+                self.selected += 1;
             }
             KeyCode::Enter => {
                 // If already connected to this entry, resume
@@ -681,10 +715,8 @@ impl App {
                     self.popup = Some(Popup::Form(FormPopup::new_edit(entry)));
                 }
             }
-            KeyCode::Char('d') | KeyCode::Char('D') => {
-                if !self.entries.is_empty() {
-                    self.popup = Some(Popup::DeleteConfirm);
-                }
+            KeyCode::Char('d') | KeyCode::Char('D') if !self.entries.is_empty() => {
+                self.popup = Some(Popup::DeleteConfirm);
             }
             _ => {}
         }
@@ -716,8 +748,7 @@ impl App {
             && matches!(key.code, KeyCode::Char(']') | KeyCode::Char('5'))
         {
             self.chord = ChordMode::Awaiting;
-            self.status_message =
-                "Ctrl+] (waiting for command — ? for help)".into();
+            self.status_message = "Ctrl+] (waiting for command — ? for help)".into();
             return Ok(());
         }
 
@@ -755,8 +786,14 @@ impl App {
         // Shift+PageUp/Down always scrolls locally, regardless of mode
         if key.modifiers.contains(KeyModifiers::SHIFT) {
             match key.code {
-                KeyCode::PageUp => { self.emulator.scroll_up(KEY_SCROLL_LINES); return Ok(()); }
-                KeyCode::PageDown => { self.emulator.scroll_down(KEY_SCROLL_LINES); return Ok(()); }
+                KeyCode::PageUp => {
+                    self.emulator.scroll_up(KEY_SCROLL_LINES);
+                    return Ok(());
+                }
+                KeyCode::PageDown => {
+                    self.emulator.scroll_down(KEY_SCROLL_LINES);
+                    return Ok(());
+                }
                 _ => {}
             }
         }
@@ -774,7 +811,8 @@ impl App {
                 if let Some(tx) = &self.connection_tx {
                     let text = format!("{}\r\n", self.input);
                     if self.needs_local_echo() {
-                        self.emulator.process(format!("{}\r\n", self.input).as_bytes());
+                        self.emulator
+                            .process(format!("{}\r\n", self.input).as_bytes());
                     }
                     // Save non-empty input to history
                     if !self.input.is_empty() {
@@ -788,37 +826,32 @@ impl App {
                     self.input.clear();
                 }
             }
-            KeyCode::Up => {
-                if !self.history.is_empty() {
-                    match self.history_index {
-                        None => {
-                            // Start browsing: save current input, show last history entry
-                            self.history_draft = self.input.clone();
-                            self.history_index = Some(self.history.len() - 1);
-                            self.input = self.history[self.history.len() - 1].clone();
-                        }
-                        Some(i) if i > 0 => {
-                            self.history_index = Some(i - 1);
-                            self.input = self.history[i - 1].clone();
-                        }
-                        _ => {} // already at oldest
+            KeyCode::Up if !self.history.is_empty() => {
+                match self.history_index {
+                    None => {
+                        // Start browsing: save current input, show last history entry
+                        self.history_draft = self.input.clone();
+                        self.history_index = Some(self.history.len() - 1);
+                        self.input = self.history[self.history.len() - 1].clone();
                     }
+                    Some(i) if i > 0 => {
+                        self.history_index = Some(i - 1);
+                        self.input = self.history[i - 1].clone();
+                    }
+                    _ => {} // already at oldest
                 }
             }
             KeyCode::Down => {
-                match self.history_index {
-                    Some(i) => {
-                        if i + 1 < self.history.len() {
-                            self.history_index = Some(i + 1);
-                            self.input = self.history[i + 1].clone();
-                        } else {
-                            // Past the end: restore draft
-                            self.history_index = None;
-                            self.input = self.history_draft.clone();
-                            self.history_draft.clear();
-                        }
+                if let Some(i) = self.history_index {
+                    if i + 1 < self.history.len() {
+                        self.history_index = Some(i + 1);
+                        self.input = self.history[i + 1].clone();
+                    } else {
+                        // Past the end: restore draft
+                        self.history_index = None;
+                        self.input = self.history_draft.clone();
+                        self.history_draft.clear();
                     }
-                    None => {} // not browsing history
                 }
             }
             KeyCode::Char(c) => {
@@ -891,10 +924,10 @@ impl App {
             _ => (None, None),
         };
 
-        if let Some(echo_data) = echo {
-            if self.needs_local_echo() {
-                self.emulator.process(&echo_data);
-            }
+        if let Some(echo_data) = echo
+            && self.needs_local_echo()
+        {
+            self.emulator.process(&echo_data);
         }
 
         if let Some(data) = send {
@@ -931,18 +964,12 @@ impl App {
         let cols = term_width;
         let rows = term_height.max(1);
         let handle = match protocol {
-            Protocol::Telnet => {
-                tokio::spawn(async move {
-                    network::connect_raw_tcp(host, port, cols, rows, id, event_tx).await;
-                })
-            }
-            Protocol::Ssh => {
-                tokio::spawn(async move {
-                    network::ssh::connect_ssh(
-                        host, port, username, cols, rows, id, event_tx,
-                    ).await;
-                })
-            }
+            Protocol::Telnet => tokio::spawn(async move {
+                network::connect_raw_tcp(host, port, cols, rows, id, event_tx).await;
+            }),
+            Protocol::Ssh => tokio::spawn(async move {
+                network::ssh::connect_ssh(host, port, username, cols, rows, id, event_tx).await;
+            }),
         };
         self.connection_handle = Some(handle);
         Ok(())
@@ -988,8 +1015,11 @@ mod popup_tests {
 
     fn entry() -> AddressBookEntry {
         AddressBookEntry {
-            name: "x".into(), host: "h".into(), port: 23,
-            protocol: Protocol::Telnet, username: None,
+            name: "x".into(),
+            host: "h".into(),
+            port: 23,
+            protocol: Protocol::Telnet,
+            username: None,
         }
     }
 
@@ -1005,8 +1035,12 @@ mod popup_tests {
     fn next_field_cycles_through_all_fields() {
         let mut f = FormPopup::new_add();
         let order = [
-            PopupField::Name, PopupField::Host, PopupField::Port,
-            PopupField::Protocol, PopupField::Username, PopupField::Name,
+            PopupField::Name,
+            PopupField::Host,
+            PopupField::Port,
+            PopupField::Protocol,
+            PopupField::Username,
+            PopupField::Name,
         ];
         for window in order.windows(2) {
             assert_eq!(f.focused, window[0]);
@@ -1018,9 +1052,13 @@ mod popup_tests {
     #[test]
     fn prev_field_is_inverse_of_next() {
         let mut f = FormPopup::new_add();
-        for _ in 0..5 { f.next_field(); }
+        for _ in 0..5 {
+            f.next_field();
+        }
         assert_eq!(f.focused, PopupField::Name);
-        for _ in 0..5 { f.prev_field(); }
+        for _ in 0..5 {
+            f.prev_field();
+        }
         assert_eq!(f.focused, PopupField::Name);
     }
 
@@ -1040,11 +1078,16 @@ mod popup_tests {
         // Bug being fixed: previously typing on Protocol field wrote to `name`
         // because active_field_mut() fell through to &mut self.name.
         let mut f = FormPopup::new_add();
-        f.next_field(); f.next_field(); f.next_field(); // Name → Host → Port → Protocol
+        f.next_field();
+        f.next_field();
+        f.next_field(); // Name → Host → Port → Protocol
         assert_eq!(f.focused, PopupField::Protocol);
         let name_before = f.name.clone();
         f.type_char('z');
-        assert_eq!(f.name, name_before, "typing on Protocol must not mutate Name");
+        assert_eq!(
+            f.name, name_before,
+            "typing on Protocol must not mutate Name"
+        );
     }
 
     #[test]

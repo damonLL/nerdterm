@@ -1,8 +1,8 @@
 pub mod ssh;
 pub mod telnet;
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -50,12 +50,7 @@ pub async fn connect_raw_tcp(
                 loop {
                     match reader.read(&mut buf).await {
                         Ok(0) => {
-                            let _ = tx
-                                .send(AppEvent::Disconnected {
-                                    id,
-                                    reason: None,
-                                })
-                                .await;
+                            let _ = tx.send(AppEvent::Disconnected { id, reason: None }).await;
                             break;
                         }
                         Ok(n) => {

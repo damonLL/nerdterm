@@ -1,7 +1,7 @@
-/// Telnet protocol constants and state machine filter.
-///
-/// Strips IAC sequences from the data stream, responds to negotiations,
-/// and passes only clean display data through to vt100.
+//! Telnet protocol constants and state machine filter.
+//!
+//! Strips IAC sequences from the data stream, responds to negotiations,
+//! and passes only clean display data through to vt100.
 
 // Telnet commands
 const IAC: u8 = 0xFF;
@@ -136,7 +136,9 @@ impl TelnetFilter {
                 }
                 State::Wont => {
                     if byte == OPT_ECHO {
-                        self.flags.server_echo.store(false, std::sync::atomic::Ordering::Relaxed);
+                        self.flags
+                            .server_echo
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
                     }
                     self.state = State::Data;
                 }
@@ -168,12 +170,30 @@ impl TelnetFilter {
                     // Per RFC 855, only IAC SE and IAC IAC are valid inside SB.
                     // Any other IAC X aborts the partial subneg and X is
                     // dispatched as if it had just followed a fresh IAC.
-                    WILL => { self.sb_buf.clear(); self.state = State::Will; }
-                    WONT => { self.sb_buf.clear(); self.state = State::Wont; }
-                    DO   => { self.sb_buf.clear(); self.state = State::Do; }
-                    DONT => { self.sb_buf.clear(); self.state = State::Dont; }
-                    SB   => { self.sb_buf.clear(); self.state = State::Sb; }
-                    _ => { self.sb_buf.clear(); self.state = State::Data; }
+                    WILL => {
+                        self.sb_buf.clear();
+                        self.state = State::Will;
+                    }
+                    WONT => {
+                        self.sb_buf.clear();
+                        self.state = State::Wont;
+                    }
+                    DO => {
+                        self.sb_buf.clear();
+                        self.state = State::Do;
+                    }
+                    DONT => {
+                        self.sb_buf.clear();
+                        self.state = State::Dont;
+                    }
+                    SB => {
+                        self.sb_buf.clear();
+                        self.state = State::Sb;
+                    }
+                    _ => {
+                        self.sb_buf.clear();
+                        self.state = State::Data;
+                    }
                 },
             }
         }
@@ -186,7 +206,9 @@ impl TelnetFilter {
             OPT_ECHO => {
                 // Server will handle echoing (e.g. password prompts suppress echo)
                 response.extend_from_slice(&[IAC, DO, option]);
-                self.flags.server_echo.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.flags
+                    .server_echo
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
             OPT_SUPPRESS_GO_AHEAD => {
                 response.extend_from_slice(&[IAC, DO, option]);
@@ -204,7 +226,9 @@ impl TelnetFilter {
                 // Accept NAWS — we'll send our window size
                 response.extend_from_slice(&[IAC, WILL, OPT_NAWS]);
                 self.naws_enabled = true;
-                self.flags.naws_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.flags
+                    .naws_enabled
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 self.append_naws(response);
             }
             OPT_TERMINAL_TYPE => {
@@ -223,16 +247,13 @@ impl TelnetFilter {
             return;
         }
         let option = self.sb_buf[0];
-        match option {
-            OPT_TERMINAL_TYPE => {
-                // Server asks SEND (01) — respond with terminal type
-                if self.sb_buf.len() >= 2 && self.sb_buf[1] == 1 {
-                    response.extend_from_slice(&[IAC, SB, OPT_TERMINAL_TYPE, 0]); // 0 = IS
-                    response.extend_from_slice(b"XTERM-256COLOR");
-                    response.extend_from_slice(&[IAC, SE]);
-                }
+        if option == OPT_TERMINAL_TYPE {
+            // Server asks SEND (01) — respond with terminal type
+            if self.sb_buf.len() >= 2 && self.sb_buf[1] == 1 {
+                response.extend_from_slice(&[IAC, SB, OPT_TERMINAL_TYPE, 0]); // 0 = IS
+                response.extend_from_slice(b"XTERM-256COLOR");
+                response.extend_from_slice(&[IAC, SE]);
             }
-            _ => {}
         }
     }
 
@@ -255,7 +276,6 @@ impl TelnetFilter {
         }
         response.extend_from_slice(&[IAC, SE]);
     }
-
 }
 
 #[cfg(test)]
@@ -271,7 +291,9 @@ mod tests {
         let mut needle = Vec::new();
         needle.extend_from_slice(&cols.to_be_bytes());
         needle.extend_from_slice(&rows.to_be_bytes());
-        response.windows(needle.len()).any(|w| w == needle.as_slice())
+        response
+            .windows(needle.len())
+            .any(|w| w == needle.as_slice())
     }
 
     #[test]
@@ -280,7 +302,8 @@ mod tests {
         let out = f.process(&[IAC, DO, OPT_NAWS]);
         assert!(
             naws_payload_present(&out.response, 132, 50),
-            "expected NAWS payload with 132x50, got {:?}", out.response,
+            "expected NAWS payload with 132x50, got {:?}",
+            out.response,
         );
     }
 
@@ -297,7 +320,8 @@ mod tests {
         let out = f.process(&[IAC, DO, OPT_NAWS]);
         assert!(
             naws_payload_present(&out.response, 100, 40),
-            "expected NAWS payload with 100x40 after resize, got {:?}", out.response,
+            "expected NAWS payload with 100x40 after resize, got {:?}",
+            out.response,
         );
     }
 
@@ -310,12 +334,20 @@ mod tests {
         let mut f = new_filter(80, 24);
         let input = [
             b'A',
-            IAC, SB, OPT_TERMINAL_TYPE, 0xAB,
-            IAC, 0xF1,  // NOP inside subneg — invalid, must abort cleanly
+            IAC,
+            SB,
+            OPT_TERMINAL_TYPE,
+            0xAB,
+            IAC,
+            0xF1, // NOP inside subneg — invalid, must abort cleanly
             b'B',
         ];
         let out = f.process(&input);
-        assert!(out.data.contains(&b'A'), "leading 'A' missing from {:?}", out.data);
+        assert!(
+            out.data.contains(&b'A'),
+            "leading 'A' missing from {:?}",
+            out.data
+        );
         assert!(
             out.data.contains(&b'B'),
             "data after aborted subneg was swallowed; got data={:?}",
@@ -333,7 +365,8 @@ mod tests {
         let response_str = String::from_utf8_lossy(&out.response);
         assert!(
             response_str.contains("XTERM-256COLOR"),
-            "expected terminal-type response, got {:?}", out.response,
+            "expected terminal-type response, got {:?}",
+            out.response,
         );
     }
 
