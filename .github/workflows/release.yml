@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual trigger from the Actions tab. Builds across all platforms but
+  # uploads as workflow artefacts instead of attaching to a GitHub Release —
+  # useful for verifying the matrix builds cleanly before cutting a tag.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -54,9 +58,20 @@ jobs:
           ls -la
 
       - name: Upload to GitHub Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/nerdterm-${{ matrix.target }}.tar.gz
             dist/nerdterm-${{ matrix.target }}.tar.gz.sha256
           fail_on_unmatched_files: true
+
+      - name: Upload as workflow artefact (dry-run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nerdterm-${{ matrix.target }}
+          path: |
+            dist/nerdterm-${{ matrix.target }}.tar.gz
+            dist/nerdterm-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
