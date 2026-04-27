@@ -12,7 +12,38 @@ A cross-platform terminal client for BBS, MUD, and SSH connections, written in R
 - **Session suspend**: `Esc` returns to the address book without dropping the connection; resume with `Enter` on the highlighted entry.
 - **Session capture**: hotkey-toggled raw-byte transcript of inbound server data to a self-describing `.log` file in the user's config dir. Activate with `Ctrl+] l`; help via `Ctrl+] ?`. ANSI is preserved so `cat` replays the session in color.
 
-## Install
+## Download
+
+Pre-built binaries for the current release live on the [Releases page](https://github.com/damonLL/nerdterm/releases/latest). Pick the tarball for your platform:
+
+| Platform | File |
+|---|---|
+| Linux (x86_64) | `nerdterm-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS (Apple Silicon) | `nerdterm-aarch64-apple-darwin.tar.gz` |
+| macOS (Intel) | `nerdterm-x86_64-apple-darwin.tar.gz` |
+
+Extract and run:
+
+```bash
+tar -xzf nerdterm-<target>.tar.gz
+./nerdterm
+```
+
+Optionally drop the binary into your `PATH` (`~/.local/bin`, `/usr/local/bin`, etc.).
+
+Each tarball ships with a `.sha256` companion. Verify before running:
+
+```bash
+shasum -a 256 -c nerdterm-<target>.tar.gz.sha256
+```
+
+**macOS Gatekeeper:** the binaries are unsigned. The first launch will be blocked — either right-click the binary in Finder → *Open* and confirm, or strip the quarantine attribute from the terminal:
+
+```bash
+xattr -d com.apple.quarantine nerdterm
+```
+
+## Build from source
 
 Requires a Rust toolchain (1.85+).
 
