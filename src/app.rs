@@ -32,9 +32,11 @@ pub enum AppState {
     Connected,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum InputMode {
+    #[serde(rename = "line")]
     LineBuffered,
+    #[serde(rename = "character")]
     Character,
 }
 
