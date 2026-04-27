@@ -20,6 +20,11 @@ pub fn draw(f: &mut Frame, popup: &Popup) {
         Popup::DeleteConfirm => draw_delete_confirm(f),
         Popup::Password(input) => draw_password_prompt(f, input),
         Popup::Form(form) => draw_form(f, form),
+        Popup::EditSettings(_) => {
+            // Rendering implemented in Task 7. The popup is still
+            // unreachable from the UI today (Task 8 wires the hotkey),
+            // so a no-op draw is safe until then.
+        }
         Popup::HostKeyTrust(p) => draw_host_key_trust(f, p),
         Popup::ChordHelp => draw_chord_help(f),
     }

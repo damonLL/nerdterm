@@ -92,15 +92,11 @@ pub fn load_from(p: &Path) -> LoadedSettings {
     }
 }
 
-// Consumed by tests today; Task 6 (settings popup) wires `save` into App.
-#[allow(dead_code)]
 pub fn save(s: &Settings) -> Result<()> {
     let p = path()?;
     save_to(&p, s)
 }
 
-// Same as `save`: tests exercise it; Task 6 wires it in via App.
-#[allow(dead_code)]
 pub fn save_to(p: &Path, s: &Settings) -> Result<()> {
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent)?;

@@ -57,6 +57,10 @@ pub enum FormMode {
 
 pub enum Popup {
     Form(FormPopup),
+    // Constructed by Task 8 (settings hotkey). Drop the allow when the
+    // hotkey lands.
+    #[allow(dead_code)]
+    EditSettings(EditSettingsPopup),
     DeleteConfirm,
     Password(String),
     HostKeyTrust(HostKeyTrustPopup),
@@ -180,6 +184,81 @@ impl FormPopup {
             PopupField::Username => Some(&mut self.username),
             PopupField::Protocol => None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SettingsField {
+    Scrollback,
+    Mode,
+    TerminalType,
+}
+
+pub struct EditSettingsPopup {
+    pub focused: SettingsField,
+    pub scrollback_input: String,
+    pub mode: InputMode,
+    pub terminal_type_input: String,
+    pub error: Option<String>,
+}
+
+impl EditSettingsPopup {
+    // Called by Task 8 (settings hotkey). Tests exercise it today.
+    #[allow(dead_code)]
+    pub fn from_settings(s: &config::settings::Settings) -> Self {
+        Self {
+            focused: SettingsField::Scrollback,
+            scrollback_input: s.scrollback_lines.to_string(),
+            mode: s.default_input_mode,
+            terminal_type_input: s.terminal_type.clone(),
+            error: None,
+        }
+    }
+
+    pub fn next_field(&mut self) {
+        self.focused = match self.focused {
+            SettingsField::Scrollback => SettingsField::Mode,
+            SettingsField::Mode => SettingsField::TerminalType,
+            SettingsField::TerminalType => SettingsField::Scrollback,
+        };
+    }
+
+    pub fn prev_field(&mut self) {
+        self.focused = match self.focused {
+            SettingsField::Scrollback => SettingsField::TerminalType,
+            SettingsField::Mode => SettingsField::Scrollback,
+            SettingsField::TerminalType => SettingsField::Mode,
+        };
+    }
+
+    pub fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            InputMode::LineBuffered => InputMode::Character,
+            InputMode::Character => InputMode::LineBuffered,
+        };
+    }
+
+    /// Validate and produce a Settings on success, or set `self.error` and
+    /// return None on failure. Caller owns persistence + closing the popup.
+    pub fn validate(&mut self) -> Option<config::settings::Settings> {
+        let scrollback = match self.scrollback_input.trim().parse::<usize>() {
+            Ok(n) if n <= 100_000 => n,
+            _ => {
+                self.error = Some("Scrollback must be a number between 0 and 100,000.".into());
+                return None;
+            }
+        };
+        let terminal_type = self.terminal_type_input.trim().to_string();
+        if terminal_type.is_empty() {
+            self.error = Some("Terminal type cannot be empty.".into());
+            return None;
+        }
+        self.error = None;
+        Some(config::settings::Settings {
+            scrollback_lines: scrollback,
+            default_input_mode: self.mode,
+            terminal_type,
+        })
     }
 }
 
@@ -347,9 +426,10 @@ impl App {
     fn handle_key_popup(&mut self, key: KeyEvent) {
         match self.popup.as_mut() {
             None => {}
-            Some(Popup::Password(_)) => self.handle_key_password_popup(key),
-            Some(Popup::DeleteConfirm) => self.handle_key_delete_popup(key),
             Some(Popup::Form(_)) => self.handle_key_form_popup(key),
+            Some(Popup::EditSettings(_)) => self.handle_key_edit_settings_popup(key),
+            Some(Popup::DeleteConfirm) => self.handle_key_delete_popup(key),
+            Some(Popup::Password(_)) => self.handle_key_password_popup(key),
             Some(Popup::HostKeyTrust(_)) => self.handle_key_host_key_trust_popup(key),
             Some(Popup::ChordHelp) => self.handle_key_chord_help_popup(key),
         }
@@ -457,6 +537,47 @@ impl App {
                         self.status_message = format!("Updated '{}'", entry.name);
                         self.entries[self.selected] = entry;
                         self.save_entries();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_edit_settings_popup(&mut self, key: KeyEvent) {
+        let Some(Popup::EditSettings(p)) = self.popup.as_mut() else {
+            return;
+        };
+
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => {
+                self.popup = None;
+            }
+            (KeyCode::Tab, m) if m.contains(KeyModifiers::SHIFT) => p.prev_field(),
+            (KeyCode::BackTab, _) => p.prev_field(),
+            (KeyCode::Tab, _) => p.next_field(),
+            (KeyCode::Char(' '), _) if p.focused == SettingsField::Mode => p.toggle_mode(),
+            (KeyCode::Backspace, _) => match p.focused {
+                SettingsField::Scrollback => {
+                    p.scrollback_input.pop();
+                }
+                SettingsField::TerminalType => {
+                    p.terminal_type_input.pop();
+                }
+                SettingsField::Mode => {}
+            },
+            (KeyCode::Char(c), _) => match p.focused {
+                SettingsField::Scrollback => p.scrollback_input.push(c),
+                SettingsField::TerminalType => p.terminal_type_input.push(c),
+                SettingsField::Mode => {}
+            },
+            (KeyCode::Enter, _) => {
+                if let Some(new_settings) = p.validate() {
+                    if let Err(e) = config::settings::save(&new_settings) {
+                        p.error = Some(format!("Could not save settings: {}", e));
+                    } else {
+                        self.settings = new_settings;
+                        self.popup = None;
                     }
                 }
             }
@@ -1148,5 +1269,72 @@ mod popup_tests {
         assert_eq!(f.name, "x");
         assert_eq!(f.host, "h");
         assert_eq!(f.port_str, "23");
+    }
+
+    #[test]
+    fn settings_popup_round_trips_focus_with_tab() {
+        let s = config::settings::Settings::default();
+        let mut p = EditSettingsPopup::from_settings(&s);
+        assert_eq!(p.focused, SettingsField::Scrollback);
+        p.next_field();
+        assert_eq!(p.focused, SettingsField::Mode);
+        p.next_field();
+        assert_eq!(p.focused, SettingsField::TerminalType);
+        p.next_field();
+        assert_eq!(p.focused, SettingsField::Scrollback);
+        p.prev_field();
+        assert_eq!(p.focused, SettingsField::TerminalType);
+    }
+
+    #[test]
+    fn settings_popup_toggle_mode_swaps_input_mode() {
+        let s = config::settings::Settings::default();
+        let mut p = EditSettingsPopup::from_settings(&s);
+        assert_eq!(p.mode, InputMode::LineBuffered);
+        p.toggle_mode();
+        assert_eq!(p.mode, InputMode::Character);
+        p.toggle_mode();
+        assert_eq!(p.mode, InputMode::LineBuffered);
+    }
+
+    #[test]
+    fn settings_popup_rejects_non_numeric_scrollback() {
+        let s = config::settings::Settings::default();
+        let mut p = EditSettingsPopup::from_settings(&s);
+        p.scrollback_input = "abc".into();
+        assert!(p.validate().is_none());
+        assert!(p.error.is_some());
+    }
+
+    #[test]
+    fn settings_popup_rejects_scrollback_above_cap() {
+        let s = config::settings::Settings::default();
+        let mut p = EditSettingsPopup::from_settings(&s);
+        p.scrollback_input = "100001".into();
+        assert!(p.validate().is_none());
+        assert!(p.error.is_some());
+    }
+
+    #[test]
+    fn settings_popup_rejects_empty_terminal_type() {
+        let s = config::settings::Settings::default();
+        let mut p = EditSettingsPopup::from_settings(&s);
+        p.terminal_type_input = "   ".into();
+        assert!(p.validate().is_none());
+        assert!(p.error.is_some());
+    }
+
+    #[test]
+    fn settings_popup_validate_returns_settings_on_valid_input() {
+        let s = config::settings::Settings::default();
+        let mut p = EditSettingsPopup::from_settings(&s);
+        p.scrollback_input = "4242".into();
+        p.terminal_type_input = "ANSI".into();
+        p.toggle_mode();
+        let out = p.validate().expect("expected Ok validation");
+        assert_eq!(out.scrollback_lines, 4242);
+        assert_eq!(out.default_input_mode, InputMode::Character);
+        assert_eq!(out.terminal_type, "ANSI");
+        assert!(p.error.is_none());
     }
 }
