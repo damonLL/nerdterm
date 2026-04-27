@@ -979,7 +979,17 @@ impl App {
                 .await;
             }),
             Protocol::Ssh => tokio::spawn(async move {
-                network::ssh::connect_ssh(host, port, username, cols, rows, id, event_tx).await;
+                network::ssh::connect_ssh(
+                    host,
+                    port,
+                    username,
+                    cols,
+                    rows,
+                    id,
+                    event_tx,
+                    "xterm-256color".into(),
+                )
+                .await;
             }),
         };
         self.connection_handle = Some(handle);

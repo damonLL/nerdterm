@@ -109,6 +109,7 @@ fn find_private_keys() -> Vec<Arc<russh::keys::PrivateKey>> {
     keys
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_ssh(
     host: String,
     port: u16,
@@ -117,6 +118,7 @@ pub async fn connect_ssh(
     rows: u16,
     connection_id: u64,
     event_tx: mpsc::Sender<AppEvent>,
+    terminal_type: String,
 ) {
     let result = connect_ssh_inner(
         &host,
@@ -126,6 +128,7 @@ pub async fn connect_ssh(
         rows,
         connection_id,
         &event_tx,
+        &terminal_type,
     )
     .await;
 
@@ -139,6 +142,7 @@ pub async fn connect_ssh(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connect_ssh_inner(
     host: &str,
     port: u16,
@@ -147,6 +151,7 @@ async fn connect_ssh_inner(
     rows: u16,
     connection_id: u64,
     event_tx: &mpsc::Sender<AppEvent>,
+    terminal_type: &str,
 ) -> anyhow::Result<()> {
     let config = client::Config {
         ..Default::default()
@@ -213,7 +218,7 @@ async fn connect_ssh_inner(
 
     // Request PTY
     channel
-        .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
+        .request_pty(true, terminal_type, cols as u32, rows as u32, 0, 0, &[])
         .await?;
 
     // Request shell
