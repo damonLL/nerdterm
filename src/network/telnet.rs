@@ -83,10 +83,16 @@ pub struct TelnetFilter {
     sb_buf: Vec<u8>,
     naws_enabled: bool,
     flags: std::sync::Arc<TelnetFlags>,
+    terminal_type: String,
 }
 
 impl TelnetFilter {
-    pub fn new(cols: u16, rows: u16, flags: std::sync::Arc<TelnetFlags>) -> Self {
+    pub fn new(
+        cols: u16,
+        rows: u16,
+        flags: std::sync::Arc<TelnetFlags>,
+        terminal_type: String,
+    ) -> Self {
         flags.cols.store(cols, std::sync::atomic::Ordering::Relaxed);
         flags.rows.store(rows, std::sync::atomic::Ordering::Relaxed);
         Self {
@@ -94,6 +100,7 @@ impl TelnetFilter {
             sb_buf: Vec::new(),
             naws_enabled: false,
             flags,
+            terminal_type,
         }
     }
 
@@ -247,13 +254,11 @@ impl TelnetFilter {
             return;
         }
         let option = self.sb_buf[0];
-        if option == OPT_TERMINAL_TYPE {
-            // Server asks SEND (01) — respond with terminal type
-            if self.sb_buf.len() >= 2 && self.sb_buf[1] == 1 {
-                response.extend_from_slice(&[IAC, SB, OPT_TERMINAL_TYPE, 0]); // 0 = IS
-                response.extend_from_slice(b"XTERM-256COLOR");
-                response.extend_from_slice(&[IAC, SE]);
-            }
+        if option == OPT_TERMINAL_TYPE && self.sb_buf.len() >= 2 && self.sb_buf[1] == 1 {
+            // Server asks SEND (01) — respond with the configured terminal type.
+            response.extend_from_slice(&[IAC, SB, OPT_TERMINAL_TYPE, 0]); // 0 = IS
+            response.extend_from_slice(self.terminal_type.as_bytes());
+            response.extend_from_slice(&[IAC, SE]);
         }
     }
 
@@ -284,7 +289,12 @@ mod tests {
     use std::sync::Arc;
 
     fn new_filter(cols: u16, rows: u16) -> TelnetFilter {
-        TelnetFilter::new(cols, rows, Arc::new(TelnetFlags::new()))
+        TelnetFilter::new(
+            cols,
+            rows,
+            Arc::new(TelnetFlags::new()),
+            "XTERM-256COLOR".into(),
+        )
     }
 
     fn naws_payload_present(response: &[u8], cols: u16, rows: u16) -> bool {
@@ -314,7 +324,7 @@ mod tests {
         // re-reads on every NAWS response.
         use std::sync::atomic::Ordering;
         let flags = Arc::new(TelnetFlags::new());
-        let mut f = TelnetFilter::new(80, 24, flags.clone());
+        let mut f = TelnetFilter::new(80, 24, flags.clone(), "XTERM-256COLOR".into());
         flags.cols.store(100, Ordering::Relaxed);
         flags.rows.store(40, Ordering::Relaxed);
         let out = f.process(&[IAC, DO, OPT_NAWS]);
@@ -380,5 +390,23 @@ mod tests {
         let input = [IAC, SB, OPT_TERMINAL_TYPE, IAC, IAC, IAC, SE, b'Z'];
         let out = f.process(&input);
         assert!(out.data.contains(&b'Z'), "got data={:?}", out.data);
+    }
+
+    #[test]
+    fn subneg_response_uses_configured_terminal_type() {
+        let flags = Arc::new(TelnetFlags::new());
+        let mut f = TelnetFilter::new(80, 24, flags, "ANSI".into());
+        let out = f.process(&[IAC, SB, OPT_TERMINAL_TYPE, 1, IAC, SE]);
+        let response_str = String::from_utf8_lossy(&out.response);
+        assert!(
+            response_str.contains("ANSI"),
+            "expected configured terminal type in response, got {:?}",
+            out.response,
+        );
+        assert!(
+            !response_str.contains("XTERM-256COLOR"),
+            "default terminal type leaked through; response={:?}",
+            out.response,
+        );
     }
 }

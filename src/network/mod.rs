@@ -20,6 +20,7 @@ pub async fn connect_raw_tcp(
     rows: u16,
     connection_id: u64,
     event_tx: mpsc::Sender<AppEvent>,
+    terminal_type: String,
 ) {
     match TcpStream::connect(format!("{}:{}", host, port)).await {
         Ok(stream) => {
@@ -46,7 +47,7 @@ pub async fn connect_raw_tcp(
             let reader_flags = flags.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 4096];
-                let mut filter = TelnetFilter::new(cols, rows, reader_flags);
+                let mut filter = TelnetFilter::new(cols, rows, reader_flags, terminal_type);
                 loop {
                     match reader.read(&mut buf).await {
                         Ok(0) => {

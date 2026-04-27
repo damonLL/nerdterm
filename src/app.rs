@@ -967,7 +967,16 @@ impl App {
         let rows = term_height.max(1);
         let handle = match protocol {
             Protocol::Telnet => tokio::spawn(async move {
-                network::connect_raw_tcp(host, port, cols, rows, id, event_tx).await;
+                network::connect_raw_tcp(
+                    host,
+                    port,
+                    cols,
+                    rows,
+                    id,
+                    event_tx,
+                    "XTERM-256COLOR".into(),
+                )
+                .await;
             }),
             Protocol::Ssh => tokio::spawn(async move {
                 network::ssh::connect_ssh(host, port, username, cols, rows, id, event_tx).await;
