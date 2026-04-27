@@ -94,3 +94,27 @@ Unit tests live inline as `#[cfg(test)] mod tests` blocks at the bottom of the m
 - `terminal::emulator` — `ScrollGuard` RAII (resets vt scrollback on drop).
 
 The TUI/event-loop layer is not tested — see "Manual testing" above.
+
+## Cutting a release
+
+`scripts/release.sh` automates the pre-flight checks and the tag/push.
+
+```bash
+# Bump Cargo.toml version, regenerate Cargo.lock, commit, push:
+$EDITOR Cargo.toml          # change `version = "0.1.0"` to `0.1.1`
+cargo check                 # updates Cargo.lock to match
+git add Cargo.toml Cargo.lock
+git commit -m "Bump version to 0.1.1"
+git push origin main
+
+# Then run the release script:
+scripts/release.sh 0.1.1
+```
+
+The script verifies you're on a clean `main` synced to `origin`, that `Cargo.toml` matches the requested version, that `cargo fmt` / `cargo clippy -D warnings` / `cargo test` / `cargo build --release` all pass, and that no obvious tokens or PEM private keys are present in tracked files. On success it prompts for confirmation, then creates an annotated `v0.1.1` tag and pushes it. The tag push triggers `.github/workflows/release.yml`, which builds for Linux x86_64 + macOS aarch64 + macOS x86_64 in parallel and attaches the binaries to the auto-created GitHub Release.
+
+For a dry-run (checks only, no tag):
+
+```bash
+scripts/release.sh --check 0.1.1
+```
