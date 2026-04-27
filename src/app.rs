@@ -260,7 +260,7 @@ impl App {
             popup: None,
             selected: 0,
             connected_entry: None,
-            emulator: TerminalEmulator::new(24, 80),
+            emulator: TerminalEmulator::new(24, 80, 1000),
             input: String::new(),
             status_message,
             event_tx,
@@ -958,7 +958,7 @@ impl App {
 
         let term_height = self.height.saturating_sub(4);
         let term_width = self.width.max(1);
-        self.emulator = TerminalEmulator::new(term_height.max(1), term_width);
+        self.emulator = TerminalEmulator::new(term_height.max(1), term_width, 1000);
 
         let id = self.connection_id;
         let event_tx = self.event_tx.clone();

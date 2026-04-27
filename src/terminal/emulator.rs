@@ -1,7 +1,3 @@
-/// Number of off-screen rows kept in the scrollback buffer per session.
-/// Trade-off: more rows = more useful history at the cost of memory.
-const SCROLLBACK_LINES: usize = 1000;
-
 pub struct TerminalEmulator {
     parser: vt100::Parser,
     scroll_offset: usize,
@@ -10,9 +6,9 @@ pub struct TerminalEmulator {
 }
 
 impl TerminalEmulator {
-    pub fn new(rows: u16, cols: u16) -> Self {
+    pub fn new(rows: u16, cols: u16, scrollback_lines: usize) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols, SCROLLBACK_LINES),
+            parser: vt100::Parser::new(rows, cols, scrollback_lines),
             scroll_offset: 0,
             rows,
             cols,
@@ -82,7 +78,7 @@ mod tests {
 
     #[test]
     fn scroll_view_guard_resets_vt_scrollback_on_drop() {
-        let mut e = TerminalEmulator::new(24, 80);
+        let mut e = TerminalEmulator::new(24, 80, 1000);
         // Push some scrollback content so the offset isn't clamped to 0.
         for _ in 0..50 {
             e.process(b"line\r\n");
@@ -103,7 +99,7 @@ mod tests {
     #[test]
     fn scroll_view_guard_exposes_screen() {
         // The whole point of the guard is to render off scrolled-back cells.
-        let mut e = TerminalEmulator::new(24, 80);
+        let mut e = TerminalEmulator::new(24, 80, 1000);
         e.process(b"hello");
         let guard = e.scroll_view();
         // Cursor should be at column 5 row 0 after "hello".
