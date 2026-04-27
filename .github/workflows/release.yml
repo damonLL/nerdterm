@@ -12,6 +12,12 @@ on:
 permissions:
   contents: write
 
+# Opt the JS-based actions (checkout, cache, upload-artifact, action-gh-release)
+# into Node.js 24 ahead of the June 2026 default switch. Drop this once the
+# actions ship versions that default to Node 24.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   build:
     name: Build ${{ matrix.target }}
