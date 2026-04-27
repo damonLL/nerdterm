@@ -99,7 +99,7 @@ Press `S` from the address book to open the settings popup. Three knobs are expo
 |---|---|---|
 | Scrollback (lines) | Off-screen history depth per session | `1000` |
 | Default input mode | Initial input mode for new connections (`line` or `character`) | `line` |
-| Terminal type | Reported during telnet/SSH negotiation (e.g. `xterm-256color`, `ANSI`) | `xterm-256color` |
+| Terminal type | Reported during telnet/SSH negotiation. `Space` cycles `xterm-256color → xterm → ansi → vt100 → vt220 → dumb`. Telnet uppercases on the wire (e.g. `XTERM-256COLOR`); SSH passes through unchanged. Hand-edit `settings.toml` for values outside the list. | `xterm-256color` |
 
 Settings persist to `<config_dir>/nerdterm/settings.toml` (`~/.config/nerdterm/settings.toml` on Linux, `~/Library/Application Support/nerdterm/settings.toml` on macOS) and apply to the *next* connection. The active session and any suspended session keep the values they were started with.
 

@@ -336,10 +336,10 @@ fn draw_settings(f: &mut Frame, p: &crate::app::EditSettingsPopup) {
 
     draw_settings_field(
         f,
-        "Terminal type",
-        &p.terminal_type_input,
+        "Terminal type (Space cycles)",
+        p.terminal_type_value(),
         p.focused == SettingsField::TerminalType,
-        true,
+        false,
         rows[2],
     );
 

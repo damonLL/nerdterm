@@ -191,21 +191,42 @@ pub enum SettingsField {
     TerminalType,
 }
 
+/// Curated terminal-type values offered in the settings popup. Users with
+/// unusual needs (e.g. `rxvt-256color`) can still hand-edit `settings.toml`,
+/// or — if their existing value isn't in this list — `from_settings` will
+/// preserve it as a one-off entry at the head of the cycle.
+const STANDARD_TERMINAL_TYPES: &[&str] =
+    &["xterm-256color", "xterm", "ansi", "vt100", "vt220", "dumb"];
+
 pub struct EditSettingsPopup {
     pub focused: SettingsField,
     pub scrollback_input: String,
     pub mode: InputMode,
-    pub terminal_type_input: String,
+    pub terminal_type_options: Vec<String>,
+    pub terminal_type_idx: usize,
     pub error: Option<String>,
 }
 
 impl EditSettingsPopup {
     pub fn from_settings(s: &config::settings::Settings) -> Self {
+        let mut options: Vec<String> = STANDARD_TERMINAL_TYPES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let terminal_type_idx = if s.terminal_type.is_empty() {
+            0
+        } else if let Some(i) = options.iter().position(|o| o == &s.terminal_type) {
+            i
+        } else {
+            options.insert(0, s.terminal_type.clone());
+            0
+        };
         Self {
             focused: SettingsField::Scrollback,
             scrollback_input: s.scrollback_lines.to_string(),
             mode: s.default_input_mode,
-            terminal_type_input: s.terminal_type.clone(),
+            terminal_type_options: options,
+            terminal_type_idx,
             error: None,
         }
     }
@@ -233,6 +254,17 @@ impl EditSettingsPopup {
         };
     }
 
+    pub fn cycle_terminal_type(&mut self) {
+        if self.terminal_type_options.is_empty() {
+            return;
+        }
+        self.terminal_type_idx = (self.terminal_type_idx + 1) % self.terminal_type_options.len();
+    }
+
+    pub fn terminal_type_value(&self) -> &str {
+        &self.terminal_type_options[self.terminal_type_idx]
+    }
+
     /// Validate and produce a Settings on success, or set `self.error` and
     /// return None on failure. Caller owns persistence + closing the popup.
     pub fn validate(&mut self) -> Option<config::settings::Settings> {
@@ -243,11 +275,7 @@ impl EditSettingsPopup {
                 return None;
             }
         };
-        let terminal_type = self.terminal_type_input.trim().to_string();
-        if terminal_type.is_empty() {
-            self.error = Some("Terminal type cannot be empty.".into());
-            return None;
-        }
+        let terminal_type = self.terminal_type_value().to_string();
         self.error = None;
         Some(config::settings::Settings {
             scrollback_lines: scrollback,
@@ -552,19 +580,18 @@ impl App {
             (KeyCode::BackTab, _) => p.prev_field(),
             (KeyCode::Tab, _) => p.next_field(),
             (KeyCode::Char(' '), _) if p.focused == SettingsField::Mode => p.toggle_mode(),
+            (KeyCode::Char(' '), _) if p.focused == SettingsField::TerminalType => {
+                p.cycle_terminal_type()
+            }
             (KeyCode::Backspace, _) => match p.focused {
                 SettingsField::Scrollback => {
                     p.scrollback_input.pop();
                 }
-                SettingsField::TerminalType => {
-                    p.terminal_type_input.pop();
-                }
-                SettingsField::Mode => {}
+                SettingsField::Mode | SettingsField::TerminalType => {}
             },
             (KeyCode::Char(c), _) => match p.focused {
                 SettingsField::Scrollback => p.scrollback_input.push(c),
-                SettingsField::TerminalType => p.terminal_type_input.push(c),
-                SettingsField::Mode => {}
+                SettingsField::Mode | SettingsField::TerminalType => {}
             },
             (KeyCode::Enter, _) => {
                 if let Some(new_settings) = p.validate() {
@@ -1086,6 +1113,7 @@ impl App {
         let term_width = self.width.max(1);
         let scrollback = self.settings.scrollback_lines;
         self.emulator = TerminalEmulator::new(term_height.max(1), term_width, scrollback);
+        self.input_mode = self.settings.default_input_mode;
 
         let id = self.connection_id;
         let event_tx = self.event_tx.clone();
@@ -1316,12 +1344,37 @@ mod popup_tests {
     }
 
     #[test]
-    fn settings_popup_rejects_empty_terminal_type() {
+    fn settings_popup_cycles_terminal_type_through_standard_list() {
         let s = config::settings::Settings::default();
         let mut p = EditSettingsPopup::from_settings(&s);
-        p.terminal_type_input = "   ".into();
-        assert!(p.validate().is_none());
-        assert!(p.error.is_some());
+        // Default value is the first standard option
+        assert_eq!(p.terminal_type_value(), "xterm-256color");
+        p.cycle_terminal_type();
+        assert_eq!(p.terminal_type_value(), "xterm");
+        p.cycle_terminal_type();
+        assert_eq!(p.terminal_type_value(), "ansi");
+        // Cycle all the way back around
+        for _ in 0..STANDARD_TERMINAL_TYPES.len() {
+            p.cycle_terminal_type();
+        }
+        assert_eq!(p.terminal_type_value(), "ansi");
+    }
+
+    #[test]
+    fn settings_popup_preserves_custom_terminal_type_at_head_of_cycle() {
+        let s = config::settings::Settings {
+            scrollback_lines: 1000,
+            default_input_mode: InputMode::LineBuffered,
+            terminal_type: "rxvt-256color".into(),
+        };
+        let p = EditSettingsPopup::from_settings(&s);
+        assert_eq!(p.terminal_type_value(), "rxvt-256color");
+        // Custom value sits in front of the standard list
+        assert_eq!(
+            p.terminal_type_options.len(),
+            STANDARD_TERMINAL_TYPES.len() + 1
+        );
+        assert_eq!(p.terminal_type_options[0], "rxvt-256color");
     }
 
     #[test]
@@ -1329,12 +1382,14 @@ mod popup_tests {
         let s = config::settings::Settings::default();
         let mut p = EditSettingsPopup::from_settings(&s);
         p.scrollback_input = "4242".into();
-        p.terminal_type_input = "ANSI".into();
+        // Cycle terminal type to "ansi" (index 2 in the standard list)
+        p.cycle_terminal_type();
+        p.cycle_terminal_type();
         p.toggle_mode();
         let out = p.validate().expect("expected Ok validation");
         assert_eq!(out.scrollback_lines, 4242);
         assert_eq!(out.default_input_mode, InputMode::Character);
-        assert_eq!(out.terminal_type, "ANSI");
+        assert_eq!(out.terminal_type, "ansi");
         assert!(p.error.is_none());
     }
 }
