@@ -1,7 +1,3 @@
-// Public API is wired into App in Task 5; until then this entire module
-// would otherwise trip dead-code under -D warnings.
-#![allow(dead_code)]
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -96,11 +92,14 @@ pub fn load_from(p: &Path) -> LoadedSettings {
     }
 }
 
+// Consumed by tests today; Task 6 (settings popup) wires `save` into App.
+#[allow(dead_code)]
 pub fn save(s: &Settings) -> Result<()> {
     let p = path()?;
     save_to(&p, s)
 }
 
+#[allow(dead_code)]
 pub fn save_to(p: &Path, s: &Settings) -> Result<()> {
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent)?;

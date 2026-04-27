@@ -224,6 +224,7 @@ pub struct App {
     pub emulator: TerminalEmulator,
     pub input: String,
     pub status_message: String,
+    pub settings: config::settings::Settings,
     event_tx: mpsc::Sender<AppEvent>,
     connection_tx: Option<mpsc::Sender<ConnectionCommand>>,
     telnet_flags: Option<Arc<TelnetFlags>>,
@@ -247,22 +248,26 @@ impl App {
     pub fn new(event_tx: mpsc::Sender<AppEvent>) -> Self {
         let loaded = config::address_book::load();
         let kh = config::known_hosts::load();
-        let status_message = match (loaded.warning, kh.warning) {
-            (Some(a), Some(b)) => format!("{}\n{}", a, b),
-            (Some(a), None) => a,
-            (None, Some(b)) => b,
-            (None, None) => String::new(),
-        };
+        let s = config::settings::load();
+        let status_message = [loaded.warning, kh.warning, s.warning]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let settings = s.settings;
+        let scrollback = settings.scrollback_lines;
+        let initial_mode = settings.default_input_mode;
         Self {
             state: AppState::AddressBook,
             entries: loaded.entries,
-            input_mode: InputMode::LineBuffered,
+            input_mode: initial_mode,
             popup: None,
             selected: 0,
             connected_entry: None,
-            emulator: TerminalEmulator::new(24, 80, 1000),
+            emulator: TerminalEmulator::new(24, 80, scrollback),
             input: String::new(),
             status_message,
+            settings,
             event_tx,
             connection_tx: None,
             telnet_flags: None,
@@ -958,25 +963,18 @@ impl App {
 
         let term_height = self.height.saturating_sub(4);
         let term_width = self.width.max(1);
-        self.emulator = TerminalEmulator::new(term_height.max(1), term_width, 1000);
+        let scrollback = self.settings.scrollback_lines;
+        self.emulator = TerminalEmulator::new(term_height.max(1), term_width, scrollback);
 
         let id = self.connection_id;
         let event_tx = self.event_tx.clone();
 
         let cols = term_width;
         let rows = term_height.max(1);
+        let terminal_type = self.settings.terminal_type.clone();
         let handle = match protocol {
             Protocol::Telnet => tokio::spawn(async move {
-                network::connect_raw_tcp(
-                    host,
-                    port,
-                    cols,
-                    rows,
-                    id,
-                    event_tx,
-                    "XTERM-256COLOR".into(),
-                )
-                .await;
+                network::connect_raw_tcp(host, port, cols, rows, id, event_tx, terminal_type).await;
             }),
             Protocol::Ssh => tokio::spawn(async move {
                 network::ssh::connect_ssh(
@@ -987,7 +985,7 @@ impl App {
                     rows,
                     id,
                     event_tx,
-                    "xterm-256color".into(),
+                    terminal_type,
                 )
                 .await;
             }),
