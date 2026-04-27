@@ -68,6 +68,7 @@ Or run directly with `cargo run --release`.
 | `E` | Edit selected entry |
 | `D` | Delete selected entry |
 | `Ctrl+D` | Disconnect active session |
+| `S` | Open settings popup |
 | `Q` / `Esc` | Quit (disconnects first) |
 
 ### Connected session
@@ -89,6 +90,20 @@ In character mode: arrows, function keys, and `Ctrl+<x>` are sent raw.
 ## Default entries
 
 First launch ships with a few public hosts you can connect to without configuration: CoffeeMUD, a Star Wars ASCII stream, Aardwolf MUD, Legend of the Red Dragon, and the Synchronet BBS.
+
+## Settings
+
+Press `S` from the address book to open the settings popup. Three knobs are exposed:
+
+| Setting | Description | Default |
+|---|---|---|
+| Scrollback (lines) | Off-screen history depth per session | `1000` |
+| Default input mode | Initial input mode for new connections (`line` or `character`) | `line` |
+| Terminal type | Reported during telnet/SSH negotiation (e.g. `xterm-256color`, `ANSI`) | `xterm-256color` |
+
+Settings persist to `<config_dir>/nerdterm/settings.toml` (`~/.config/nerdterm/settings.toml` on Linux, `~/Library/Application Support/nerdterm/settings.toml` on macOS) and apply to the *next* connection. The active session and any suspended session keep the values they were started with.
+
+If the file becomes unparseable (e.g. hand-edited badly), nerdterm renames it to `settings.toml.corrupt-<timestamp>` on startup, falls back to defaults, and surfaces a warning on the address-book status line.
 
 ## Status
 
