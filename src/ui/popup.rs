@@ -20,11 +20,7 @@ pub fn draw(f: &mut Frame, popup: &Popup) {
         Popup::DeleteConfirm => draw_delete_confirm(f),
         Popup::Password(input) => draw_password_prompt(f, input),
         Popup::Form(form) => draw_form(f, form),
-        Popup::EditSettings(_) => {
-            // Rendering implemented in Task 7. The popup is still
-            // unreachable from the UI today (Task 8 wires the hotkey),
-            // so a no-op draw is safe until then.
-        }
+        Popup::EditSettings(s) => draw_settings(f, s),
         Popup::HostKeyTrust(p) => draw_host_key_trust(f, p),
         Popup::ChordHelp => draw_chord_help(f),
     }
@@ -291,6 +287,71 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
     .alignment(Alignment::Center)
     .style(Style::default().fg(Color::DarkGray));
     f.render_widget(help, fields[5]);
+}
+
+fn draw_settings(f: &mut Frame, p: &crate::app::EditSettingsPopup) {
+    use crate::app::{InputMode, SettingsField};
+
+    let area = centered_rect(60, 40, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Settings ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // scrollback
+            Constraint::Length(3), // mode
+            Constraint::Length(3), // terminal type
+            Constraint::Min(0),    // error / hints
+        ])
+        .split(inner);
+
+    draw_field(
+        f,
+        "Scrollback (lines)",
+        &p.scrollback_input,
+        p.focused == SettingsField::Scrollback,
+        rows[0],
+    );
+
+    let mode_text = match p.mode {
+        InputMode::LineBuffered => "line",
+        InputMode::Character => "character",
+    };
+    draw_field(
+        f,
+        "Default input mode (Space toggles)",
+        mode_text,
+        p.focused == SettingsField::Mode,
+        rows[1],
+    );
+
+    draw_field(
+        f,
+        "Terminal type",
+        &p.terminal_type_input,
+        p.focused == SettingsField::TerminalType,
+        rows[2],
+    );
+
+    let footer_lines: Vec<Line> = match &p.error {
+        Some(msg) => vec![
+            Line::from(Span::styled(
+                msg.clone(),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )),
+            Line::from("Tab cycles fields · Enter saves · Esc cancels"),
+        ],
+        None => vec![Line::from("Tab cycles fields · Enter saves · Esc cancels")],
+    };
+    let footer = Paragraph::new(footer_lines);
+    f.render_widget(footer, rows[3]);
 }
 
 fn draw_field(f: &mut Frame, label: &str, value: &str, active: bool, area: Rect) {
