@@ -1,0 +1,50 @@
+/target
+
+# Rust extras
+**/*.rs.bk
+*.pdb
+*.profraw
+*.profdata
+lcov.info
+
+# Local OS cruft
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editor / IDE
+*.swp
+*~
+.idea/
+.vscode/
+
+# Dev shell tooling
+.direnv/
+.envrc
+
+# AI tooling per-user config (Claude Code, Cursor, etc.)
+.claude/
+.cursor/
+
+# Anything that looks like a secret should never be committed
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.gpg
+*.asc
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
+*.p12
+*.pfx
+secrets.toml
+credentials.json
+
+# NerdTerm's own runtime artefacts (in case anyone runs the binary from the repo root)
+sessions/
+*.log
