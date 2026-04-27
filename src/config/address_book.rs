@@ -128,6 +128,13 @@ fn default_entries() -> Vec<AddressBookEntry> {
     use crate::app::Protocol;
     vec![
         AddressBookEntry {
+            name: "CoffeeMUD".into(),
+            host: "coffeemud.net".into(),
+            port: 2323,
+            protocol: Protocol::Telnet,
+            username: None,
+        },
+        AddressBookEntry {
             name: "Star Wars ASCII".into(),
             host: "towel.blinkenlights.nl".into(),
             port: 23,

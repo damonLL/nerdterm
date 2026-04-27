@@ -57,7 +57,7 @@ In character mode: arrows, function keys, and `Ctrl+<x>` are sent raw.
 
 ## Default entries
 
-First launch ships with a few public hosts you can connect to without configuration: a Star Wars ASCII stream, Aardwolf MUD, Legend of the Red Dragon, and the Synchronet BBS.
+First launch ships with a few public hosts you can connect to without configuration: CoffeeMUD, a Star Wars ASCII stream, Aardwolf MUD, Legend of the Red Dragon, and the Synchronet BBS.
 
 ## Status
 
