@@ -257,7 +257,7 @@ impl TelnetFilter {
         if option == OPT_TERMINAL_TYPE && self.sb_buf.len() >= 2 && self.sb_buf[1] == 1 {
             // Server asks SEND (01) — respond with the configured terminal type.
             response.extend_from_slice(&[IAC, SB, OPT_TERMINAL_TYPE, 0]); // 0 = IS
-            response.extend_from_slice(self.terminal_type.as_bytes());
+            response.extend_from_slice(self.terminal_type.to_ascii_uppercase().as_bytes());
             response.extend_from_slice(&[IAC, SE]);
         }
     }
@@ -406,6 +406,27 @@ mod tests {
         assert!(
             !response_str.contains("XTERM-256COLOR"),
             "default terminal type leaked through; response={:?}",
+            out.response,
+        );
+    }
+
+    #[test]
+    fn subneg_response_uppercases_lowercase_terminal_type() {
+        // RFC 1091 doesn't require uppercase, but legacy BBSes string-match on
+        // it. The configured string round-trips to SSH untouched, but the
+        // telnet wire emits uppercase.
+        let flags = Arc::new(TelnetFlags::new());
+        let mut f = TelnetFilter::new(80, 24, flags, "xterm-256color".into());
+        let out = f.process(&[IAC, SB, OPT_TERMINAL_TYPE, 1, IAC, SE]);
+        let response_str = String::from_utf8_lossy(&out.response);
+        assert!(
+            response_str.contains("XTERM-256COLOR"),
+            "expected uppercase TERMINAL-TYPE on the wire, got {:?}",
+            out.response,
+        );
+        assert!(
+            !response_str.contains("xterm-256color"),
+            "lowercase form leaked through; response={:?}",
             out.response,
         );
     }
