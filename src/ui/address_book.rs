@@ -107,6 +107,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         menu_item("A", "Add").spans,
         menu_item("E", "Edit").spans,
         menu_item("D", "Delete").spans,
+        menu_item("S", "Settings").spans,
     ];
     if app.connected_entry.is_some() {
         menu_items.push(menu_item("^D", "Disconnect").spans);

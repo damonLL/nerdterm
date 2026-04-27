@@ -312,11 +312,12 @@ fn draw_settings(f: &mut Frame, p: &crate::app::EditSettingsPopup) {
         ])
         .split(inner);
 
-    draw_field(
+    draw_settings_field(
         f,
         "Scrollback (lines)",
         &p.scrollback_input,
         p.focused == SettingsField::Scrollback,
+        true,
         rows[0],
     );
 
@@ -324,19 +325,21 @@ fn draw_settings(f: &mut Frame, p: &crate::app::EditSettingsPopup) {
         InputMode::LineBuffered => "line",
         InputMode::Character => "character",
     };
-    draw_field(
+    draw_settings_field(
         f,
         "Default input mode (Space toggles)",
         mode_text,
         p.focused == SettingsField::Mode,
+        false,
         rows[1],
     );
 
-    draw_field(
+    draw_settings_field(
         f,
         "Terminal type",
         &p.terminal_type_input,
         p.focused == SettingsField::TerminalType,
+        true,
         rows[2],
     );
 
@@ -390,5 +393,45 @@ fn draw_field(f: &mut Frame, label: &str, value: &str, active: bool, area: Rect)
 
     if active {
         f.set_cursor_position((input_area.x + value.len() as u16, input_area.y));
+    }
+}
+
+/// Settings popup needs full-text labels ("Default input mode (Space toggles)"
+/// etc.) that don't fit in `LABEL_WIDTH`, so it stacks the value beneath the
+/// label instead of placing them in side-by-side columns. Pass `editable=true`
+/// for text-entry fields (cursor positioning + typing); `false` for the mode
+/// field (toggled with Space, no caret).
+fn draw_settings_field(
+    f: &mut Frame,
+    label: &str,
+    value: &str,
+    active: bool,
+    editable: bool,
+    area: Rect,
+) {
+    let lines = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+
+    let label_style = if active {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    f.render_widget(Paragraph::new(label).style(label_style), lines[0]);
+
+    let value_style = if active {
+        Style::default().bg(Color::DarkGray).fg(Color::White)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let display = format!(" {} ", value);
+    f.render_widget(Paragraph::new(display).style(value_style), lines[1]);
+
+    if active && editable {
+        f.set_cursor_position((lines[1].x + 1 + value.len() as u16, lines[1].y));
     }
 }
