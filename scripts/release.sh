@@ -162,5 +162,14 @@ git push origin "$TAG"
 
 echo ""
 green "Done. Release workflow triggered."
-echo "  Actions:  https://github.com/damonLL/nerdterm/actions"
-echo "  Release:  https://github.com/damonLL/nerdterm/releases/tag/$TAG"
+
+ORIGIN_URL=$(git remote get-url origin 2>/dev/null || echo "")
+GITHUB_REPO=""
+if [[ "$ORIGIN_URL" =~ ^(https://github\.com/|git@github\.com:)([^/]+/[^/]+)$ ]]; then
+    GITHUB_REPO="${BASH_REMATCH[2]%.git}"
+fi
+
+if [[ -n "$GITHUB_REPO" ]]; then
+    echo "  Actions:  https://github.com/$GITHUB_REPO/actions"
+    echo "  Release:  https://github.com/$GITHUB_REPO/releases/tag/$TAG"
+fi
