@@ -57,9 +57,6 @@ pub enum FormMode {
 
 pub enum Popup {
     Form(FormPopup),
-    // Constructed by Task 8 (settings hotkey). Drop the allow when the
-    // hotkey lands.
-    #[allow(dead_code)]
     EditSettings(EditSettingsPopup),
     DeleteConfirm,
     Password(String),
@@ -203,8 +200,6 @@ pub struct EditSettingsPopup {
 }
 
 impl EditSettingsPopup {
-    // Called by Task 8 (settings hotkey). Tests exercise it today.
-    #[allow(dead_code)]
     pub fn from_settings(s: &config::settings::Settings) -> Self {
         Self {
             focused: SettingsField::Scrollback,
@@ -845,6 +840,11 @@ impl App {
             }
             KeyCode::Char('d') | KeyCode::Char('D') if !self.entries.is_empty() => {
                 self.popup = Some(Popup::DeleteConfirm);
+            }
+            KeyCode::Char('S') | KeyCode::Char('s') => {
+                self.popup = Some(Popup::EditSettings(EditSettingsPopup::from_settings(
+                    &self.settings,
+                )));
             }
             _ => {}
         }
