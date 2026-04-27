@@ -133,6 +133,7 @@ fn default_entries() -> Vec<AddressBookEntry> {
             port: 2323,
             protocol: Protocol::Telnet,
             username: None,
+            terminal_type: None,
         },
         AddressBookEntry {
             name: "Star Wars ASCII".into(),
@@ -140,6 +141,7 @@ fn default_entries() -> Vec<AddressBookEntry> {
             port: 23,
             protocol: Protocol::Telnet,
             username: None,
+            terminal_type: None,
         },
         AddressBookEntry {
             name: "Aardwolf MUD".into(),
@@ -147,6 +149,7 @@ fn default_entries() -> Vec<AddressBookEntry> {
             port: 4000,
             protocol: Protocol::Telnet,
             username: None,
+            terminal_type: None,
         },
         AddressBookEntry {
             name: "Legend of the Red Dragon".into(),
@@ -154,6 +157,7 @@ fn default_entries() -> Vec<AddressBookEntry> {
             port: 23,
             protocol: Protocol::Telnet,
             username: None,
+            terminal_type: None,
         },
         AddressBookEntry {
             name: "Synchronet BBS".into(),
@@ -161,6 +165,7 @@ fn default_entries() -> Vec<AddressBookEntry> {
             port: 23,
             protocol: Protocol::Telnet,
             username: None,
+            terminal_type: None,
         },
     ]
 }
@@ -188,6 +193,7 @@ mod tests {
             port: 2323,
             protocol: Protocol::Telnet,
             username: None,
+            terminal_type: None,
         }]
     }
 
@@ -290,6 +296,7 @@ mod tests {
                 port: 23,
                 protocol: crate::app::Protocol::Telnet,
                 username: None,
+                terminal_type: None,
             });
         }
         save_to(&path, &bigger).unwrap();

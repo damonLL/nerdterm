@@ -47,7 +47,13 @@ pub enum PopupField {
     Port,
     Protocol,
     Username,
+    TerminalType,
 }
+
+/// Sentinel shown at the head of the form popup's terminal-type cycle. When
+/// the user leaves it on this option, the entry stores `terminal_type: None`,
+/// which tells `App::connect` to fall back to whatever Settings says.
+const FORM_TERMINAL_TYPE_DEFAULT: &str = "(default)";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FormMode {
@@ -79,6 +85,8 @@ pub struct FormPopup {
     pub port_str: String,
     pub protocol: Protocol,
     pub username: String,
+    pub terminal_type_options: Vec<String>,
+    pub terminal_type_idx: usize,
 }
 
 impl FormPopup {
@@ -91,10 +99,17 @@ impl FormPopup {
             port_str: "23".into(),
             protocol: Protocol::Telnet,
             username: String::new(),
+            terminal_type_options: form_terminal_type_options(None),
+            terminal_type_idx: 0,
         }
     }
 
     pub fn new_edit(entry: &AddressBookEntry) -> Self {
+        let options = form_terminal_type_options(entry.terminal_type.as_deref());
+        let terminal_type_idx = match &entry.terminal_type {
+            None => 0,
+            Some(s) => options.iter().position(|o| o == s).unwrap_or(0),
+        };
         Self {
             mode: FormMode::Edit,
             focused: PopupField::Name,
@@ -103,6 +118,8 @@ impl FormPopup {
             port_str: entry.port.to_string(),
             protocol: entry.protocol,
             username: entry.username.clone().unwrap_or_default(),
+            terminal_type_options: options,
+            terminal_type_idx,
         }
     }
 
@@ -112,18 +129,43 @@ impl FormPopup {
             PopupField::Host => PopupField::Port,
             PopupField::Port => PopupField::Protocol,
             PopupField::Protocol => PopupField::Username,
-            PopupField::Username => PopupField::Name,
+            PopupField::Username => PopupField::TerminalType,
+            PopupField::TerminalType => PopupField::Name,
         };
     }
 
     pub fn prev_field(&mut self) {
         self.focused = match self.focused {
-            PopupField::Name => PopupField::Username,
+            PopupField::Name => PopupField::TerminalType,
             PopupField::Host => PopupField::Name,
             PopupField::Port => PopupField::Host,
             PopupField::Protocol => PopupField::Port,
             PopupField::Username => PopupField::Protocol,
+            PopupField::TerminalType => PopupField::Username,
         };
+    }
+
+    pub fn cycle_terminal_type(&mut self) {
+        if self.terminal_type_options.is_empty() {
+            return;
+        }
+        self.terminal_type_idx = (self.terminal_type_idx + 1) % self.terminal_type_options.len();
+    }
+
+    pub fn terminal_type_label(&self) -> &str {
+        &self.terminal_type_options[self.terminal_type_idx]
+    }
+
+    /// Returns `None` when the popup is on the "(default)" sentinel, otherwise
+    /// the configured override string. Callers store this directly on the
+    /// `AddressBookEntry`, where `None` means "fall back to Settings".
+    pub fn terminal_type_override(&self) -> Option<String> {
+        let v = self.terminal_type_label();
+        if v == FORM_TERMINAL_TYPE_DEFAULT {
+            None
+        } else {
+            Some(v.to_string())
+        }
     }
 
     pub fn type_char(&mut self, c: char) {
@@ -170,6 +212,7 @@ impl FormPopup {
             } else {
                 Some(self.username.clone())
             },
+            terminal_type: self.terminal_type_override(),
         })
     }
 
@@ -179,9 +222,27 @@ impl FormPopup {
             PopupField::Host => Some(&mut self.host),
             PopupField::Port => Some(&mut self.port_str),
             PopupField::Username => Some(&mut self.username),
-            PopupField::Protocol => None,
+            PopupField::Protocol | PopupField::TerminalType => None,
         }
     }
+}
+
+/// Builds the cycle list shown in the form popup's terminal-type field. The
+/// "(default)" sentinel is always first; if `current` is set to a value not in
+/// the standard list, it is preserved as a second entry so a hand-edited
+/// `address_book.toml` round-trips through the popup without losing its
+/// custom value.
+fn form_terminal_type_options(current: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = std::iter::once(FORM_TERMINAL_TYPE_DEFAULT.to_string())
+        .chain(STANDARD_TERMINAL_TYPES.iter().map(|s| (*s).to_string()))
+        .collect();
+    if let Some(c) = current
+        && !c.is_empty()
+        && !out.iter().any(|o| o == c)
+    {
+        out.insert(1, c.to_string());
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -310,6 +371,11 @@ pub struct AddressBookEntry {
     pub protocol: Protocol,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// Per-entry override for the telnet/SSH terminal type. `None` means
+    /// "use whatever Settings says." Existing TOML files without the field
+    /// load as `None` thanks to `#[serde(default)]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_type: Option<String>,
 }
 
 fn default_protocol() -> Protocol {
@@ -536,6 +602,9 @@ impl App {
             KeyCode::Tab | KeyCode::Down => form.next_field(),
             KeyCode::BackTab | KeyCode::Up => form.prev_field(),
             KeyCode::Char(' ') if form.focused == PopupField::Protocol => form.toggle_protocol(),
+            KeyCode::Char(' ') if form.focused == PopupField::TerminalType => {
+                form.cycle_terminal_type()
+            }
             KeyCode::Char(c) => form.type_char(c),
             KeyCode::Backspace => form.backspace(),
             KeyCode::Enter => {
@@ -1100,6 +1169,7 @@ impl App {
         let port = entry.port;
         let protocol = entry.protocol;
         let username = entry.username.clone();
+        let entry_terminal_type = entry.terminal_type.clone();
 
         // Cancel any existing connection
         self.cancel_connection().await;
@@ -1120,7 +1190,8 @@ impl App {
 
         let cols = term_width;
         let rows = term_height.max(1);
-        let terminal_type = self.settings.terminal_type.clone();
+        let terminal_type =
+            entry_terminal_type.unwrap_or_else(|| self.settings.terminal_type.clone());
         let handle = match protocol {
             Protocol::Telnet => tokio::spawn(async move {
                 network::connect_raw_tcp(host, port, cols, rows, id, event_tx, terminal_type).await;
@@ -1188,6 +1259,7 @@ mod popup_tests {
             port: 23,
             protocol: Protocol::Telnet,
             username: None,
+            terminal_type: None,
         }
     }
 
@@ -1208,6 +1280,7 @@ mod popup_tests {
             PopupField::Port,
             PopupField::Protocol,
             PopupField::Username,
+            PopupField::TerminalType,
             PopupField::Name,
         ];
         for window in order.windows(2) {
@@ -1220,14 +1293,82 @@ mod popup_tests {
     #[test]
     fn prev_field_is_inverse_of_next() {
         let mut f = FormPopup::new_add();
-        for _ in 0..5 {
+        for _ in 0..6 {
             f.next_field();
         }
         assert_eq!(f.focused, PopupField::Name);
-        for _ in 0..5 {
+        for _ in 0..6 {
             f.prev_field();
         }
         assert_eq!(f.focused, PopupField::Name);
+    }
+
+    #[test]
+    fn form_popup_starts_terminal_type_on_default_sentinel() {
+        let f = FormPopup::new_add();
+        assert_eq!(f.terminal_type_label(), FORM_TERMINAL_TYPE_DEFAULT);
+        assert!(f.terminal_type_override().is_none());
+    }
+
+    #[test]
+    fn form_popup_cycles_terminal_type_through_default_then_standard_list() {
+        let mut f = FormPopup::new_add();
+        f.cycle_terminal_type();
+        assert_eq!(f.terminal_type_label(), "xterm-256color");
+        assert_eq!(
+            f.terminal_type_override(),
+            Some("xterm-256color".to_string())
+        );
+        // Cycle back around to the (default) sentinel
+        let total = STANDARD_TERMINAL_TYPES.len();
+        for _ in 0..total {
+            f.cycle_terminal_type();
+        }
+        assert_eq!(f.terminal_type_label(), FORM_TERMINAL_TYPE_DEFAULT);
+        assert!(f.terminal_type_override().is_none());
+    }
+
+    #[test]
+    fn form_popup_edit_preserves_custom_terminal_type_at_head_of_cycle() {
+        let entry = AddressBookEntry {
+            name: "Custom".into(),
+            host: "h".into(),
+            port: 23,
+            protocol: Protocol::Telnet,
+            username: None,
+            terminal_type: Some("rxvt-256color".into()),
+        };
+        let f = FormPopup::new_edit(&entry);
+        assert_eq!(f.terminal_type_label(), "rxvt-256color");
+        assert_eq!(
+            f.terminal_type_override(),
+            Some("rxvt-256color".to_string())
+        );
+        // Custom value sits between the (default) sentinel and the standard list
+        assert_eq!(f.terminal_type_options[0], FORM_TERMINAL_TYPE_DEFAULT);
+        assert_eq!(f.terminal_type_options[1], "rxvt-256color");
+    }
+
+    #[test]
+    fn form_popup_to_entry_carries_terminal_type_override() {
+        let mut f = FormPopup::new_add();
+        f.name = "Test".into();
+        f.host = "example.com".into();
+        f.cycle_terminal_type(); // (default) -> xterm-256color
+        f.cycle_terminal_type(); // -> xterm
+        f.cycle_terminal_type(); // -> ansi
+        let entry = f.to_entry().expect("expected valid entry");
+        assert_eq!(entry.terminal_type, Some("ansi".to_string()));
+    }
+
+    #[test]
+    fn form_popup_to_entry_records_default_sentinel_as_none() {
+        let mut f = FormPopup::new_add();
+        f.name = "Test".into();
+        f.host = "example.com".into();
+        // Leave terminal_type on the (default) sentinel
+        let entry = f.to_entry().expect("expected valid entry");
+        assert!(entry.terminal_type.is_none());
     }
 
     #[test]

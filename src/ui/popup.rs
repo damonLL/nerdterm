@@ -186,7 +186,7 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
         FormMode::Edit => " Edit Entry ",
     };
 
-    let area = centered_rect(50, 15, f.area());
+    let area = centered_rect(50, 17, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -204,6 +204,7 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
             Constraint::Length(2), // port
             Constraint::Length(2), // protocol
             Constraint::Length(2), // username
+            Constraint::Length(2), // terminal type
             Constraint::Length(1), // help
         ])
         .split(inner);
@@ -276,6 +277,35 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
         fields[4],
     );
 
+    // Terminal type cycle field — same Protocol-style two-cell layout as the
+    // Type: row, since cycling values doesn't fit the text-input draw_field.
+    let term_active = popup.focused == PopupField::TerminalType;
+    let term_label_style = if term_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let term_value_style = if term_active {
+        Style::default().bg(Color::DarkGray).fg(Color::White)
+    } else {
+        Style::default()
+    };
+    let term_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(LABEL_WIDTH), Constraint::Min(1)])
+        .split(fields[5]);
+    let term_label = Paragraph::new("Term:").style(term_label_style);
+    f.render_widget(
+        term_label,
+        Rect::new(term_chunks[0].x, term_chunks[0].y, term_chunks[0].width, 1),
+    );
+    let term_text = format!("{} (Space cycles)", popup.terminal_type_label());
+    let term_widget = Paragraph::new(term_text).style(term_value_style);
+    f.render_widget(
+        term_widget,
+        Rect::new(term_chunks[1].x, term_chunks[1].y, term_chunks[1].width, 1),
+    );
+
     let help = Paragraph::new(Line::from(vec![
         Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" next  "),
@@ -286,7 +316,7 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
     ]))
     .alignment(Alignment::Center)
     .style(Style::default().fg(Color::DarkGray));
-    f.render_widget(help, fields[5]);
+    f.render_widget(help, fields[6]);
 }
 
 fn draw_settings(f: &mut Frame, p: &crate::app::EditSettingsPopup) {

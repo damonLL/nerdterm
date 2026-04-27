@@ -87,6 +87,8 @@ In character mode: arrows, function keys, and `Ctrl+<x>` are sent raw.
 
 `Tab`/`Shift+Tab` move between fields. `Space` toggles Telnet/SSH (port auto-flips between 23 and 22). `Enter` saves, `Esc` cancels.
 
+The **Term:** field cycles with `Space` through `(default) → xterm-256color → xterm → ansi → vt100 → vt220 → dumb`. `(default)` falls back to the global terminal type from Settings; any other value overrides it for this entry only — useful when individual servers expect different terminal types.
+
 ## Default entries
 
 First launch ships with a few public hosts you can connect to without configuration: CoffeeMUD, a Star Wars ASCII stream, Aardwolf MUD, Legend of the Red Dragon, and the Synchronet BBS.
@@ -99,7 +101,7 @@ Press `S` from the address book to open the settings popup. Three knobs are expo
 |---|---|---|
 | Scrollback (lines) | Off-screen history depth per session | `1000` |
 | Default input mode | Initial input mode for new connections (`line` or `character`) | `line` |
-| Terminal type | Reported during telnet/SSH negotiation. `Space` cycles `xterm-256color → xterm → ansi → vt100 → vt220 → dumb`. Telnet uppercases on the wire (e.g. `XTERM-256COLOR`); SSH passes through unchanged. Hand-edit `settings.toml` for values outside the list. | `xterm-256color` |
+| Terminal type | Global fallback reported during telnet/SSH negotiation. `Space` cycles `xterm-256color → xterm → ansi → vt100 → vt220 → dumb`. Per-entry overrides (set in the address-book Edit popup's `Term:` field) take precedence over this. Telnet uppercases on the wire (e.g. `XTERM-256COLOR`); SSH passes through unchanged. Hand-edit `settings.toml` for values outside the list. | `xterm-256color` |
 
 Settings persist to `<config_dir>/nerdterm/settings.toml` (`~/.config/nerdterm/settings.toml` on Linux, `~/Library/Application Support/nerdterm/settings.toml` on macOS) and apply to the *next* connection. The active session and any suspended session keep the values they were started with.
 
