@@ -106,12 +106,7 @@ fn match_query(params: &[u8], final_byte: u8) -> Option<AnsiQuery> {
 /// Build a CPR response. `row` and `col` are 0-based (matching
 /// `vt100::Screen::cursor_position`); the wire format is 1-based.
 pub fn cpr_response(row: u16, col: u16) -> Vec<u8> {
-    format!(
-        "\x1b[{};{}R",
-        row.saturating_add(1),
-        col.saturating_add(1)
-    )
-    .into_bytes()
+    format!("\x1b[{};{}R", row.saturating_add(1), col.saturating_add(1)).into_bytes()
 }
 
 pub fn dsr_ok_response() -> Vec<u8> {
@@ -142,19 +137,13 @@ mod tests {
     #[test]
     fn detects_da_query_no_param() {
         let mut s = AnsiQueryScanner::new();
-        assert_eq!(
-            s.scan(b"\x1b[c"),
-            vec![AnsiQuery::PrimaryDeviceAttributes],
-        );
+        assert_eq!(s.scan(b"\x1b[c"), vec![AnsiQuery::PrimaryDeviceAttributes],);
     }
 
     #[test]
     fn detects_da_query_zero_param() {
         let mut s = AnsiQueryScanner::new();
-        assert_eq!(
-            s.scan(b"\x1b[0c"),
-            vec![AnsiQuery::PrimaryDeviceAttributes],
-        );
+        assert_eq!(s.scan(b"\x1b[0c"), vec![AnsiQuery::PrimaryDeviceAttributes],);
     }
 
     #[test]
@@ -187,10 +176,7 @@ mod tests {
         let mut s = AnsiQueryScanner::new();
         assert_eq!(
             s.scan(b"\x1b[6n\x1b[5n"),
-            vec![
-                AnsiQuery::CursorPositionReport,
-                AnsiQuery::DeviceStatusOk,
-            ],
+            vec![AnsiQuery::CursorPositionReport, AnsiQuery::DeviceStatusOk,],
         );
     }
 

@@ -95,7 +95,10 @@ green "[ok]  Cargo.lock in sync"
 if cargo fmt --check >/dev/null 2>&1; then
     green "[ok]  cargo fmt clean"
 else
-    yellow "[warn] cargo fmt --check found unformatted files (not blocking)"
+    red    "[fail] cargo fmt --check found unformatted files"
+    yellow "       Run 'cargo fmt' to fix, commit the result, then re-run."
+    yellow "       (CI enforces this — letting it warn locally guarantees a red CI run.)"
+    exit 1
 fi
 
 # ----- clippy ---------------------------------------------------------------
