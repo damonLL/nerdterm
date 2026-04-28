@@ -21,6 +21,12 @@ impl TerminalEmulator {
         self.scroll_offset = 0;
     }
 
+    /// Current cursor position as (row, col), 0-based. Used by the ANSI
+    /// query responder to answer `ESC[6n` (CPR).
+    pub fn cursor_position(&self) -> (u16, u16) {
+        self.parser.screen().cursor_position()
+    }
+
     pub fn resize(&mut self, rows: u16, cols: u16) {
         if rows > 0 && cols > 0 && (rows != self.rows || cols != self.cols) {
             self.rows = rows;

@@ -12,6 +12,9 @@ use crate::config;
 use crate::events::{AppEvent, ConnectionCommand};
 use crate::network;
 use crate::network::telnet::TelnetFlags;
+use crate::terminal::ansi_query::{
+    AnsiQuery, AnsiQueryScanner, cpr_response, da_response, dsr_ok_response,
+};
 use crate::terminal::emulator::TerminalEmulator;
 
 /// Lines scrolled per Shift+PgUp/PgDn (and PgUp/PgDn in line-buffered mode).
@@ -405,6 +408,7 @@ pub struct App {
     password_reply: Option<tokio::sync::oneshot::Sender<String>>,
     host_key_reply: Option<tokio::sync::oneshot::Sender<bool>>,
     pub capture: Option<config::capture::CaptureFile>,
+    ansi_query_scanner: AnsiQueryScanner,
     chord: ChordMode,
     shown_chord_hint: bool,
     quit: bool,
@@ -448,6 +452,7 @@ impl App {
             password_reply: None,
             host_key_reply: None,
             capture: None,
+            ansi_query_scanner: AnsiQueryScanner::new(),
             chord: ChordMode::Normal,
             shown_chord_hint: false,
             quit: false,
@@ -689,6 +694,7 @@ impl App {
                 self.state = AppState::Connected;
                 self.connection_tx = Some(cmd_tx);
                 self.telnet_flags = telnet_flags;
+                self.ansi_query_scanner = AnsiQueryScanner::new();
                 self.connected_entry = Some(self.selected);
                 self.status_message = format!(
                     "Connected to {}",
@@ -707,8 +713,28 @@ impl App {
                 if id != self.connection_id {
                     return Ok(());
                 }
+                // Detect ANSI query sequences (CPR / DSR / DA) before
+                // processing so we know whether to reply at all. The
+                // emulator still sees the full byte stream — vt100 treats
+                // these queries as no-ops to screen state.
+                let queries = self.ansi_query_scanner.scan(&data);
                 // Process data even when viewing address book (session suspended)
                 self.emulator.process(&data);
+                if !queries.is_empty()
+                    && let Some(tx) = &self.connection_tx
+                {
+                    for q in queries {
+                        let response = match q {
+                            AnsiQuery::CursorPositionReport => {
+                                let (row, col) = self.emulator.cursor_position();
+                                cpr_response(row, col)
+                            }
+                            AnsiQuery::DeviceStatusOk => dsr_ok_response(),
+                            AnsiQuery::PrimaryDeviceAttributes => da_response(),
+                        };
+                        let _ = tx.send(ConnectionCommand::SendRaw(response)).await;
+                    }
+                }
                 // Tee to capture file if active. Fail loud: any write error
                 // closes the file, flips the indicator off, and flashes a
                 // failure message that includes bytes saved + path.
