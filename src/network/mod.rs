@@ -24,6 +24,12 @@ pub async fn connect_raw_tcp(
 ) {
     match TcpStream::connect(format!("{}:{}", host, port)).await {
         Ok(stream) => {
+            // Disable Nagle's algorithm for interactive use. Without this,
+            // single-keystroke writes get coalesced for up to ~40 ms each,
+            // which feels exactly like dropped/delayed input during fast
+            // typing (e.g. password entry on a BBS). System `telnet` does
+            // the same thing.
+            let _ = stream.set_nodelay(true);
             let (cmd_tx, mut cmd_rx) = mpsc::channel::<ConnectionCommand>(64);
             let (mut reader, mut writer) = stream.into_split();
 
