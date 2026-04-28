@@ -70,17 +70,23 @@ jobs:
           mkdir -p dist
           cp "target/release/${{ matrix.bin }}" "dist/${{ matrix.bin }}"
           cd dist
+          ARCHIVE="nerdterm-${{ matrix.target }}.${{ matrix.archive }}"
           case "${{ matrix.archive }}" in
             zip)
-              # 7z is preinstalled on the windows-latest runner.
-              7z a "nerdterm-${{ matrix.target }}.zip" "${{ matrix.bin }}" >/dev/null
+              # 7z is preinstalled on the windows-latest runner. Git Bash
+              # there ships sha256sum (MSYS2 coreutils) but not shasum.
+              7z a "$ARCHIVE" "${{ matrix.bin }}" >/dev/null
+              sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
               ;;
             tar.gz)
-              tar -czf "nerdterm-${{ matrix.target }}.tar.gz" "${{ matrix.bin }}"
+              # macOS lacks GNU sha256sum by default; shasum -a 256 is the
+              # cross-platform option for the Linux/macOS runners. Output
+              # format is byte-identical to sha256sum so verification works
+              # the same regardless of which side generated the .sha256.
+              tar -czf "$ARCHIVE" "${{ matrix.bin }}"
+              shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
               ;;
           esac
-          shasum -a 256 "nerdterm-${{ matrix.target }}.${{ matrix.archive }}" \
-            > "nerdterm-${{ matrix.target }}.${{ matrix.archive }}.sha256"
           ls -la
 
       - name: Upload to GitHub Release
