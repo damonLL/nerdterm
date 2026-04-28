@@ -168,17 +168,28 @@ async fn connect_ssh_inner(
 
     let user = username.unwrap_or("root");
 
-    // Try key-based auth first
-    let mut authenticated = false;
-    let keys = find_private_keys();
-    for key in keys {
-        let key_with_hash = PrivateKeyWithHashAlg::new(key, None);
-        match handle.authenticate_publickey(user, key_with_hash).await {
-            Ok(result) if result.success() => {
-                authenticated = true;
-                break;
+    // Try `none` auth first. BBSes and MUDs running embedded SSH servers
+    // commonly accept `none` and handle login themselves in-channel after
+    // the connection opens. OpenSSH's client does the same as its first
+    // probe. If the server actually requires real auth this returns
+    // failure and we fall through to keys → password.
+    let mut authenticated = match handle.authenticate_none(user).await {
+        Ok(result) => result.success(),
+        Err(_) => false,
+    };
+
+    // Try key-based auth next
+    if !authenticated {
+        let keys = find_private_keys();
+        for key in keys {
+            let key_with_hash = PrivateKeyWithHashAlg::new(key, None);
+            match handle.authenticate_publickey(user, key_with_hash).await {
+                Ok(result) if result.success() => {
+                    authenticated = true;
+                    break;
+                }
+                _ => continue,
             }
-            _ => continue,
         }
     }
 
