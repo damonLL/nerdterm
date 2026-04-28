@@ -28,10 +28,20 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            bin: nerdterm
           - os: macos-latest
             target: aarch64-apple-darwin
+            archive: tar.gz
+            bin: nerdterm
           - os: macos-13
             target: x86_64-apple-darwin
+            archive: tar.gz
+            bin: nerdterm
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            bin: nerdterm.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -56,11 +66,21 @@ jobs:
       - name: Package binary + checksum
         shell: bash
         run: |
+          set -e
           mkdir -p dist
-          cp target/release/nerdterm dist/nerdterm
+          cp "target/release/${{ matrix.bin }}" "dist/${{ matrix.bin }}"
           cd dist
-          tar -czf "nerdterm-${{ matrix.target }}.tar.gz" nerdterm
-          shasum -a 256 "nerdterm-${{ matrix.target }}.tar.gz" > "nerdterm-${{ matrix.target }}.tar.gz.sha256"
+          case "${{ matrix.archive }}" in
+            zip)
+              # 7z is preinstalled on the windows-latest runner.
+              7z a "nerdterm-${{ matrix.target }}.zip" "${{ matrix.bin }}" >/dev/null
+              ;;
+            tar.gz)
+              tar -czf "nerdterm-${{ matrix.target }}.tar.gz" "${{ matrix.bin }}"
+              ;;
+          esac
+          shasum -a 256 "nerdterm-${{ matrix.target }}.${{ matrix.archive }}" \
+            > "nerdterm-${{ matrix.target }}.${{ matrix.archive }}.sha256"
           ls -la
 
       - name: Upload to GitHub Release
@@ -68,8 +88,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/nerdterm-${{ matrix.target }}.tar.gz
-            dist/nerdterm-${{ matrix.target }}.tar.gz.sha256
+            dist/nerdterm-${{ matrix.target }}.${{ matrix.archive }}
+            dist/nerdterm-${{ matrix.target }}.${{ matrix.archive }}.sha256
           fail_on_unmatched_files: true
 
       - name: Upload as workflow artefact (dry-run)
@@ -78,6 +98,6 @@ jobs:
         with:
           name: nerdterm-${{ matrix.target }}
           path: |
-            dist/nerdterm-${{ matrix.target }}.tar.gz
-            dist/nerdterm-${{ matrix.target }}.tar.gz.sha256
+            dist/nerdterm-${{ matrix.target }}.${{ matrix.archive }}
+            dist/nerdterm-${{ matrix.target }}.${{ matrix.archive }}.sha256
           if-no-files-found: error

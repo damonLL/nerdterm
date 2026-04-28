@@ -14,27 +14,30 @@ A cross-platform terminal client for BBS, MUD, and SSH connections, written in R
 
 ## Download
 
-Pre-built binaries for the current release live on the [Releases page](https://github.com/damonLL/nerdterm/releases/latest). Pick the tarball for your platform:
+Pre-built binaries for the current release live on the [Releases page](https://github.com/damonLL/nerdterm/releases/latest). Pick the archive for your platform:
 
 | Platform | File |
 |---|---|
 | Linux (x86_64) | `nerdterm-x86_64-unknown-linux-gnu.tar.gz` |
 | macOS (Apple Silicon) | `nerdterm-aarch64-apple-darwin.tar.gz` |
 | macOS (Intel) | `nerdterm-x86_64-apple-darwin.tar.gz` |
+| Windows (x86_64) | `nerdterm-x86_64-pc-windows-msvc.zip` |
 
-Extract and run:
+Extract and run. On Linux/macOS:
 
 ```bash
 tar -xzf nerdterm-<target>.tar.gz
 ./nerdterm
 ```
 
-Optionally drop the binary into your `PATH` (`~/.local/bin`, `/usr/local/bin`, etc.).
+On Windows, unzip and run `nerdterm.exe` from a modern terminal (Windows Terminal or PowerShell 7+ recommended — `cmd.exe` won't render ANSI art reliably).
 
-Each tarball ships with a `.sha256` companion. Verify before running:
+Optionally drop the binary into your `PATH` (`~/.local/bin`, `/usr/local/bin`, `%USERPROFILE%\bin`, etc.).
+
+Each archive ships with a `.sha256` companion. Verify before running:
 
 ```bash
-shasum -a 256 -c nerdterm-<target>.tar.gz.sha256
+shasum -a 256 -c nerdterm-<target>.<ext>.sha256
 ```
 
 **macOS Gatekeeper:** the binaries are unsigned. The first launch will be blocked — either right-click the binary in Finder → *Open* and confirm, or strip the quarantine attribute from the terminal:
@@ -42,6 +45,8 @@ shasum -a 256 -c nerdterm-<target>.tar.gz.sha256
 ```bash
 xattr -d com.apple.quarantine nerdterm
 ```
+
+**Windows SmartScreen:** the binary is unsigned. SmartScreen may warn on first launch; click *More info* → *Run anyway*.
 
 ## Build from source
 
