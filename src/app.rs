@@ -931,11 +931,15 @@ impl App {
                 self.connected_entry = None;
                 self.quit = true;
             }
-            KeyCode::Up | KeyCode::Char('k') if self.selected > 0 => {
-                self.selected -= 1;
+            KeyCode::Up | KeyCode::Char('k') if !self.entries.is_empty() => {
+                self.selected = if self.selected == 0 {
+                    self.entries.len() - 1
+                } else {
+                    self.selected - 1
+                };
             }
-            KeyCode::Down | KeyCode::Char('j') if self.selected + 1 < self.entries.len() => {
-                self.selected += 1;
+            KeyCode::Down | KeyCode::Char('j') if !self.entries.is_empty() => {
+                self.selected = (self.selected + 1) % self.entries.len();
             }
             KeyCode::Enter => {
                 // If already connected to this entry, resume
