@@ -1,6 +1,6 @@
 [package]
 name = "nerdterm"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A TUI client for BBS, MUD, and SSH connections"
 license = "MIT"
