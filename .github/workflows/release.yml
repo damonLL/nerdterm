@@ -34,14 +34,18 @@ jobs:
             target: aarch64-apple-darwin
             archive: tar.gz
             bin: nerdterm
-          - os: macos-13
-            target: x86_64-apple-darwin
-            archive: tar.gz
-            bin: nerdterm
+          # Windows builds and passes a manual smoke test, but is not attached
+          # to tagged releases yet (see the upload step's `if`). It still builds
+          # here so regressions surface, and workflow_dispatch artefacts it.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
             bin: nerdterm.exe
+          # NOTE: x86_64-apple-darwin (Intel) is intentionally omitted. The
+          # macos-13 Intel runner reliably stalls in queue and cancelled every
+          # release run to date. Restore it via cross-compile from the arm64
+          # runner (rustup target add x86_64-apple-darwin + --target) when
+          # Intel-Mac support is prioritised.
 
     steps:
       - uses: actions/checkout@v4
@@ -90,7 +94,10 @@ jobs:
           ls -la
 
       - name: Upload to GitHub Release
-        if: github.event_name == 'push'
+        # Windows is deferred: it builds above for verification but is not
+        # attached to the Release until Windows support is announced. Flip
+        # this to just `github.event_name == 'push'` to start shipping it.
+        if: github.event_name == 'push' && matrix.target != 'x86_64-pc-windows-msvc'
         uses: softprops/action-gh-release@v2
         with:
           files: |

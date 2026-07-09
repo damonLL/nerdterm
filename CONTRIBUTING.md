@@ -37,15 +37,19 @@ src/
 ├── app.rs               # App state machine, key handling, all enums (AppState, Protocol, Popup*)
 ├── events.rs            # AppEvent + ConnectionCommand enums (broken out to avoid circular deps)
 ├── config/
+│   ├── mod.rs           # config module root
 │   ├── address_book.rs  # TOML load/save + default entries
+│   ├── settings.rs      # Settings schema (scrollback, input mode, terminal type) + load/save + quarantine
 │   ├── capture.rs       # session capture file (open, header, append, O_EXCL)
 │   └── known_hosts.rs   # SSH TOFU store: HostKey, Verdict, atomic save, quarantine
 ├── network/
 │   ├── mod.rs           # connect_raw_tcp() — telnet over TCP
 │   ├── telnet.rs        # IAC state machine, TelnetFlags (atomic shared with writer)
-│   └── ssh.rs           # russh client, key-then-password auth, PTY + shell request
+│   └── ssh.rs           # russh client, none→key→password auth, PTY + shell request
 ├── terminal/
-│   └── emulator.rs      # vt100 parser wrapper with scrollback offset
+│   ├── mod.rs           # terminal module root
+│   ├── emulator.rs      # vt100 parser wrapper with scrollback offset (ScrollGuard RAII)
+│   └── ansi_query.rs    # ANSI query scanner: CPR/DSR/DA detection + response builders
 └── ui/
     ├── mod.rs           # state-router dispatch to address_book / terminal_view
     ├── address_book.rs  # list view + status bar + menu bar
@@ -64,7 +68,7 @@ There are no `tests/`, `examples/`, or `benches/` directories.
 - `App.connection_id: u64` increments on every connect. Stale events from abandoned/aborted tasks carry an old id and are dropped — this is how we tolerate cancellation races. **If you add a new `AppEvent` variant, it must carry an `id: u64` and you must filter on it in the handler.**
 - Telnet and SSH look identical to `App` post-`Connected` — the protocol-specific bits stay inside `network/`.
 - Telnet negotiation state (`server_echo`, `naws_enabled`) is shared between the reader task (which sets it) and the app/writer (which reads it) via `Arc<TelnetFlags>` of atomics. `App.needs_local_echo()` consults this; SSH always returns `false` because the PTY echoes.
-- `TerminalEmulator` wraps `vt100::Parser` with a 1000-line scrollback. To render scrollback you must call `apply_scroll()` before reading the screen and `reset_scroll_view()` after, otherwise incoming data lands in the wrong place. See `ui/terminal_view.rs` for the pattern.
+- `TerminalEmulator` wraps `vt100::Parser` with a configurable scrollback (default 1000 lines). To render scrollback, call `emulator.scroll_view()` to obtain a `ScrollGuard`, read cells through `guard.screen()`, and let the guard drop at end of scope — its `Drop` resets vt100 scrollback to 0 and restores the live view, so incoming network data lands in the right place. See `ui/terminal_view.rs` for the scoped-guard pattern.
 
 ## Library quirks worth knowing
 
@@ -77,7 +81,7 @@ There are no `tests/`, `examples/`, or `benches/` directories.
 ## Conventions
 
 - All new errors propagate through `anyhow::Result`. Network tasks swallow errors and report them via `AppEvent::Disconnected { reason: Some(e.to_string()) }` rather than panicking.
-- Background tasks are spawned with `tokio::spawn` and their `JoinHandle` is stored on `App.connection_handle` so `cancel_connection()` can `.abort()` them. Always pair a spawn with handle storage if the task represents a connection.
+- The *outer* connection task is spawned with `tokio::spawn` and its `JoinHandle` is stored on `App.connection_handle` so `cancel_connection()` can `.abort()` it. Note the nested telnet reader (`network/mod.rs`) and SSH writer (`ssh.rs`) subtasks are *not* individually tracked today — they exit when their channel/socket closes, so a host that holds the socket open can leave the reader lingering. If you add more per-connection tasks, prefer a shared `CancellationToken` over relying on channel/socket close.
 - Key handling is split by state: `handle_key_address_book`, `handle_key_connected` → `handle_key_line_buffered` / `handle_key_character`, `handle_key_popup`. Add new keys to the right one — don't sprinkle global keys at the top of `handle_key` unless they truly are global (only `Ctrl+C` is currently).
 - Char mode emits ANSI escapes for arrow/function keys via `f_key_escape()` and the literal sequences in `handle_key_character`. If you add a key, match the xterm convention. Backspace/Delete sends `0x7F` (DEL), not `0x08` (BS) — most modern hosts and BBSes treat the former as "erase last char" and render the latter as `^H`.
 - Filter `KeyEventKind::Release` at the top of `handle_crossterm_event`. Otherwise, terminals that deliver release events (kitty keyboard protocol etc.) double-fire handlers and silently consume chord state.
@@ -86,12 +90,14 @@ There are no `tests/`, `examples/`, or `benches/` directories.
 
 Unit tests live inline as `#[cfg(test)] mod tests` blocks at the bottom of the modules they cover. Current coverage:
 
-- `network::telnet` — IAC state machine (subneg edge cases, NAWS payload).
+- `network::telnet` — IAC state machine (subneg edge cases, NAWS payload, terminal-type response).
 - `config::address_book` — load/save round-trip, corrupt-file quarantine, atomic-save invariants.
+- `config::settings` — default fill-in, empty/partial files, input-mode parsing, corrupt-file quarantine, save round-trip.
 - `config::known_hosts` — verify verdicts, add+save round-trip, atomic-save, corrupt-file quarantine.
 - `config::capture` — sanitize/path-collision helpers, file open with `O_EXCL`, header format, byte counting.
-- `app::popup_tests` — `FormPopup` field navigation, validation, protocol toggle.
+- `app::popup_tests` — `FormPopup` field navigation/validation/protocol toggle, plus the settings popup (navigation, scrollback validation, terminal-type cycling).
 - `terminal::emulator` — `ScrollGuard` RAII (resets vt scrollback on drop).
+- `terminal::ansi_query` — CPR/DSR/DA detection, split-read reassembly, DEC-private rejection, response encoding.
 
 The TUI/event-loop layer is not tested — see "Manual testing" above.
 
@@ -111,7 +117,7 @@ git push origin main
 scripts/release.sh 0.1.1
 ```
 
-The script verifies you're on a clean `main` synced to `origin`, that `Cargo.toml` matches the requested version, that `cargo fmt` / `cargo clippy -D warnings` / `cargo test` / `cargo build --release` all pass, and that no obvious tokens or PEM private keys are present in tracked files. On success it prompts for confirmation, then creates an annotated `v0.1.1` tag and pushes it. The tag push triggers `.github/workflows/release.yml`, which builds for Linux x86_64 + macOS aarch64 + macOS x86_64 in parallel and attaches the binaries to the auto-created GitHub Release.
+The script verifies you're on a clean `main` synced to `origin`, that `Cargo.toml` matches the requested version, that `cargo fmt` / `cargo clippy -D warnings` / `cargo test` / `cargo build --release` all pass, and that no obvious tokens or PEM private keys are present in tracked files. On success it prompts for confirmation, then creates an annotated `v0.1.1` tag and pushes it. The tag push triggers `.github/workflows/release.yml`, which builds for Linux x86_64 + macOS aarch64 + macOS x86_64 + Windows x86_64 in parallel and attaches the binaries to the auto-created GitHub Release. (A `workflow_dispatch` run builds the same matrix but uploads workflow artefacts instead of attaching to a Release — use it to verify the matrix before cutting a tag.)
 
 For a dry-run (checks only, no tag):
 

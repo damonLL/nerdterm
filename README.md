@@ -5,12 +5,12 @@ A cross-platform terminal client for BBS, MUD, and SSH connections, written in R
 ## Features
 
 - **Telnet** with proper IAC negotiation (ECHO, SUPPRESS-GO-AHEAD, NAWS auto-resize, TERMINAL-TYPE → `XTERM-256COLOR`).
-- **SSH** via [russh](https://crates.io/crates/russh): key-based auth from `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, falling back to a masked password prompt. Host keys are verified against a TOFU `known_hosts` store with an explicit trust prompt on first connect and a hard-fail prompt on key mismatch.
+- **SSH** via [russh](https://crates.io/crates/russh): key-based auth from `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, falling back to a masked password prompt. Host keys are verified against a TOFU `known_hosts` store with an explicit trust prompt on first connect and a hard failure on key mismatch — an on-screen banner, not an accept/override prompt; re-trusting a rotated key means removing that host's entry from `known_hosts.toml`.
 - **Address book** persisted as TOML (`~/Library/Application Support/nerdterm/address_book.toml` on macOS, `$XDG_CONFIG_HOME/nerdterm/` on Linux). Add / edit / delete entries from the UI.
 - **Two input modes** when connected — line-buffered (with command history, good for MUDs) and character-at-a-time (raw keys + ANSI escapes, good for full-screen apps like vim or BBS doors).
-- **Scrollback buffer** of 1000 lines.
+- **Scrollback buffer**, configurable (default 1000 lines; adjustable in Settings).
 - **Session suspend**: `Esc` returns to the address book without dropping the connection; resume with `Enter` on the highlighted entry.
-- **Session capture**: hotkey-toggled raw-byte transcript of inbound server data to a self-describing `.log` file in the user's config dir. Activate with `Ctrl+] l`; help via `Ctrl+] ?`. ANSI is preserved so `cat` replays the session in color.
+- **Session capture**: hotkey-toggled raw-byte transcript of inbound server data to a self-describing `.log` file under `<config_dir>/nerdterm/sessions/` (`~/.config/nerdterm/sessions/` on Linux, `~/Library/Application Support/nerdterm/sessions/` on macOS). Activate with `Ctrl+] l`; help via `Ctrl+] ?`. ANSI is preserved so `cat` replays the session in color.
 
 ## Download
 
@@ -20,19 +20,17 @@ Pre-built binaries for the current release live on the [Releases page](https://g
 |---|---|
 | Linux (x86_64) | `nerdterm-x86_64-unknown-linux-gnu.tar.gz` |
 | macOS (Apple Silicon) | `nerdterm-aarch64-apple-darwin.tar.gz` |
-| macOS (Intel) | `nerdterm-x86_64-apple-darwin.tar.gz` |
-| Windows (x86_64) | `nerdterm-x86_64-pc-windows-msvc.zip` |
 
-Extract and run. On Linux/macOS:
+> **Windows and Intel-Mac builds are coming in a future release.** The Windows binary already builds and passes a smoke test in CI but isn't attached to a release yet; the Intel-Mac target is not building reliably. On those platforms, [build from source](#build-from-source) to run NerdTerm today.
+
+Extract and run:
 
 ```bash
 tar -xzf nerdterm-<target>.tar.gz
 ./nerdterm
 ```
 
-On Windows, unzip and run `nerdterm.exe` from a modern terminal (Windows Terminal or PowerShell 7+ recommended — `cmd.exe` won't render ANSI art reliably).
-
-Optionally drop the binary into your `PATH` (`~/.local/bin`, `/usr/local/bin`, `%USERPROFILE%\bin`, etc.).
+Optionally drop the binary into your `PATH` (`~/.local/bin`, `/usr/local/bin`, etc.).
 
 Each archive ships with a `.sha256` companion. Verify before running:
 
@@ -45,8 +43,6 @@ shasum -a 256 -c nerdterm-<target>.<ext>.sha256
 ```bash
 xattr -d com.apple.quarantine nerdterm
 ```
-
-**Windows SmartScreen:** the binary is unsigned. SmartScreen may warn on first launch; click *More info* → *Run anyway*.
 
 ## Build from source
 
@@ -81,12 +77,17 @@ Or run directly with `cargo run --release`.
 | Key | Action |
 |---|---|
 | `Tab` | Toggle line-buffered ↔ character mode |
-| `Esc` | Suspend session, return to address book |
+| `Esc` | Suspend session, return to address book (connection stays live) |
 | `Ctrl+D` | Disconnect |
-| `Shift+PgUp` / `Shift+PgDn` | Scroll back/forward through scrollback |
+| `Ctrl+C` | Quit nerdterm (disconnects first) |
+| `Ctrl+] l` | Toggle session capture on/off |
+| `Ctrl+] ?` | Show the `Ctrl+]` chord help |
+| `Shift+PgUp` / `Shift+PgDn` | Scroll back/forward through scrollback (any mode) |
+| `PgUp` / `PgDn` | Scroll scrollback (line mode only — sent to the host in character mode) |
+| Mouse wheel | Scroll scrollback |
 
 In line mode: `↑`/`↓` browse command history, `Enter` sends the line.
-In character mode: arrows, function keys, and `Ctrl+<x>` are sent raw.
+In character mode: arrows, function keys, and most `Ctrl+<x>` combos are sent raw. Three are reserved by the client and **not** forwarded to the host: `Ctrl+C` (quit), `Ctrl+D` (disconnect), and `Ctrl+]` (capture-chord prefix).
 
 ### Edit/Add popup
 
