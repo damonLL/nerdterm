@@ -125,8 +125,27 @@ fn quarantine(path: &Path) -> Result<PathBuf> {
 }
 
 fn default_entries() -> Vec<AddressBookEntry> {
-    use crate::app::Protocol;
+    use crate::app::{InputMode, Protocol};
     vec![
+        // Intended primary pairing for local modernbbs development.
+        AddressBookEntry {
+            name: "modernbbs (local SSH)".into(),
+            host: "localhost".into(),
+            port: 2222,
+            protocol: Protocol::Ssh,
+            username: None,
+            terminal_type: None,
+            default_input_mode: Some(InputMode::Character),
+        },
+        AddressBookEntry {
+            name: "modernbbs (local Telnet)".into(),
+            host: "localhost".into(),
+            port: 2323,
+            protocol: Protocol::Telnet,
+            username: None,
+            terminal_type: None,
+            default_input_mode: Some(InputMode::Character),
+        },
         AddressBookEntry {
             name: "CoffeeMUD".into(),
             host: "coffeemud.net".into(),
@@ -134,6 +153,7 @@ fn default_entries() -> Vec<AddressBookEntry> {
             protocol: Protocol::Telnet,
             username: None,
             terminal_type: None,
+            default_input_mode: None,
         },
         AddressBookEntry {
             name: "Star Wars ASCII".into(),
@@ -142,6 +162,7 @@ fn default_entries() -> Vec<AddressBookEntry> {
             protocol: Protocol::Telnet,
             username: None,
             terminal_type: None,
+            default_input_mode: None,
         },
         AddressBookEntry {
             name: "Aardwolf MUD".into(),
@@ -150,6 +171,7 @@ fn default_entries() -> Vec<AddressBookEntry> {
             protocol: Protocol::Telnet,
             username: None,
             terminal_type: None,
+            default_input_mode: None,
         },
         AddressBookEntry {
             name: "Legend of the Red Dragon".into(),
@@ -158,6 +180,7 @@ fn default_entries() -> Vec<AddressBookEntry> {
             protocol: Protocol::Telnet,
             username: None,
             terminal_type: None,
+            default_input_mode: None,
         },
         AddressBookEntry {
             name: "Synchronet BBS".into(),
@@ -166,6 +189,7 @@ fn default_entries() -> Vec<AddressBookEntry> {
             protocol: Protocol::Telnet,
             username: None,
             terminal_type: None,
+            default_input_mode: None,
         },
     ]
 }
@@ -194,6 +218,7 @@ mod tests {
             protocol: Protocol::Telnet,
             username: None,
             terminal_type: None,
+            default_input_mode: None,
         }]
     }
 
@@ -297,6 +322,7 @@ mod tests {
                 protocol: crate::app::Protocol::Telnet,
                 username: None,
                 terminal_type: None,
+                default_input_mode: None,
             });
         }
         save_to(&path, &bigger).unwrap();

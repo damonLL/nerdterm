@@ -1,6 +1,6 @@
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use crate::app::{FormMode, FormPopup, Popup, PopupField};
@@ -69,7 +69,9 @@ fn draw_chord_help(f: &mut Frame) {
 }
 
 fn draw_host_key_trust(f: &mut Frame, popup: &crate::app::HostKeyTrustPopup) {
-    let area = centered_rect(64, 11, f.area());
+    // Wide enough for `  Fingerprint: SHA256:` + 43 base64 chars (~65 cols)
+    // plus long hostnames; wrap so nothing is clipped on smaller terminals.
+    let area = centered_rect(78, 12, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -105,7 +107,10 @@ fn draw_host_key_trust(f: &mut Frame, popup: &crate::app::HostKeyTrustPopup) {
         ]),
     ];
 
-    let paragraph = Paragraph::new(text).block(block).alignment(Alignment::Left);
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .alignment(Alignment::Left)
+        .wrap(Wrap { trim: false });
     f.render_widget(paragraph, area);
 }
 
@@ -186,7 +191,7 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
         FormMode::Edit => " Edit Entry ",
     };
 
-    let area = centered_rect(50, 17, f.area());
+    let area = centered_rect(50, 19, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -205,6 +210,7 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
             Constraint::Length(2), // protocol
             Constraint::Length(2), // username
             Constraint::Length(2), // terminal type
+            Constraint::Length(2), // input mode
             Constraint::Length(1), // help
         ])
         .split(inner);
@@ -306,6 +312,34 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
         Rect::new(term_chunks[1].x, term_chunks[1].y, term_chunks[1].width, 1),
     );
 
+    // Input mode cycle field
+    let mode_active = popup.focused == PopupField::InputMode;
+    let mode_label_style = if mode_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let mode_value_style = if mode_active {
+        Style::default().bg(Color::DarkGray).fg(Color::White)
+    } else {
+        Style::default()
+    };
+    let mode_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(LABEL_WIDTH), Constraint::Min(1)])
+        .split(fields[6]);
+    let mode_label = Paragraph::new("Mode:").style(mode_label_style);
+    f.render_widget(
+        mode_label,
+        Rect::new(mode_chunks[0].x, mode_chunks[0].y, mode_chunks[0].width, 1),
+    );
+    let mode_text = format!("{} (Space cycles)", popup.input_mode_label());
+    let mode_widget = Paragraph::new(mode_text).style(mode_value_style);
+    f.render_widget(
+        mode_widget,
+        Rect::new(mode_chunks[1].x, mode_chunks[1].y, mode_chunks[1].width, 1),
+    );
+
     let help = Paragraph::new(Line::from(vec![
         Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" next  "),
@@ -316,7 +350,7 @@ fn draw_form(f: &mut Frame, popup: &FormPopup) {
     ]))
     .alignment(Alignment::Center)
     .style(Style::default().fg(Color::DarkGray));
-    f.render_widget(help, fields[6]);
+    f.render_widget(help, fields[7]);
 }
 
 fn draw_settings(f: &mut Frame, p: &crate::app::EditSettingsPopup) {

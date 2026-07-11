@@ -35,10 +35,22 @@ pub struct LoadResult {
     pub warning: Option<String>,
 }
 
+/// Lowercase host and strip a trailing DNS root dot so `Example.COM.` and
+/// `example.com` pin to the same TOFU entry.
+fn normalize_host(host: &str) -> String {
+    host.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
 impl KnownHosts {
     pub fn verify(&self, host: &str, port: u16, key_type: &str, fingerprint: &str) -> Verdict {
+        let host = normalize_host(host);
+
+        // Exact algorithm match first: same key type trusted or mismatched.
         for entry in &self.entries {
-            if entry.host == host && entry.port == port && entry.key_type == key_type {
+            if normalize_host(&entry.host) == host
+                && entry.port == port
+                && entry.key_type == key_type
+            {
                 if entry.fingerprint == fingerprint {
                     return Verdict::Trusted;
                 }
@@ -47,10 +59,23 @@ impl KnownHosts {
                 };
             }
         }
+
+        // Host:port already pinned under a different algorithm (e.g. stored
+        // ed25519, offered rsa). Treat as mismatch so MITM can't downgrade
+        // TOFU to a first-use trust prompt by switching key types.
+        for entry in &self.entries {
+            if normalize_host(&entry.host) == host && entry.port == port {
+                return Verdict::Mismatch {
+                    stored: entry.fingerprint.clone(),
+                };
+            }
+        }
+
         Verdict::Unknown
     }
 
-    pub fn add(&mut self, entry: HostKey) {
+    pub fn add(&mut self, mut entry: HostKey) {
+        entry.host = normalize_host(&entry.host);
         self.entries.push(entry);
     }
 
@@ -199,13 +224,27 @@ mod tests {
     }
 
     #[test]
-    fn verify_returns_unknown_when_key_type_differs() {
+    fn verify_returns_mismatch_when_key_type_differs() {
+        // Different algorithm at the same host:port is not first-use.
         let mut kh = KnownHosts::default();
         kh.add(entry("h", 22, "ssh-ed25519", "SHA256:abc"));
         assert_eq!(
-            kh.verify("h", 22, "ssh-rsa", "SHA256:abc"),
-            Verdict::Unknown,
+            kh.verify("h", 22, "ssh-rsa", "SHA256:other"),
+            Verdict::Mismatch {
+                stored: "SHA256:abc".into()
+            },
         );
+    }
+
+    #[test]
+    fn verify_normalizes_host_case_and_trailing_dot() {
+        let mut kh = KnownHosts::default();
+        kh.add(entry("Example.COM.", 22, "ssh-ed25519", "SHA256:abc"));
+        assert_eq!(
+            kh.verify("example.com", 22, "ssh-ed25519", "SHA256:abc"),
+            Verdict::Trusted,
+        );
+        assert_eq!(kh.entries[0].host, "example.com");
     }
 
     #[test]

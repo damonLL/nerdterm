@@ -18,6 +18,10 @@ const OPT_SUPPRESS_GO_AHEAD: u8 = 3;
 const OPT_NAWS: u8 = 31;
 const OPT_TERMINAL_TYPE: u8 = 24;
 
+/// Cap on `IAC SB … IAC SE` payload growth. A malicious peer that never
+/// terminates subnegotiation must not OOM the client.
+const MAX_SB_LEN: usize = 4096;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum State {
     Data,
@@ -160,8 +164,14 @@ impl TelnetFilter {
                 State::Sb => {
                     if byte == IAC {
                         self.state = State::SbIac;
-                    } else {
+                    } else if self.sb_buf.len() < MAX_SB_LEN {
                         self.sb_buf.push(byte);
+                    } else {
+                        // Overflow: abort the partial subneg so sb_buf cannot
+                        // grow without bound. This byte becomes plain data.
+                        self.sb_buf.clear();
+                        self.state = State::Data;
+                        data.push(byte);
                     }
                 }
                 State::SbIac => match byte {
@@ -169,10 +179,15 @@ impl TelnetFilter {
                         self.handle_subnegotiation(&mut response);
                         self.state = State::Data;
                     }
-                    IAC => {
-                        // Escaped 0xFF inside subnegotiation data
+                    // Escaped 0xFF inside subnegotiation data (within cap).
+                    IAC if self.sb_buf.len() < MAX_SB_LEN => {
                         self.sb_buf.push(IAC);
                         self.state = State::Sb;
+                    }
+                    IAC => {
+                        // Overflow on escaped IAC — abort subneg.
+                        self.sb_buf.clear();
+                        self.state = State::Data;
                     }
                     // Per RFC 855, only IAC SE and IAC IAC are valid inside SB.
                     // Any other IAC X aborts the partial subneg and X is
@@ -407,6 +422,29 @@ mod tests {
             !response_str.contains("XTERM-256COLOR"),
             "default terminal type leaked through; response={:?}",
             out.response,
+        );
+    }
+
+    #[test]
+    fn subneg_buffer_is_bounded() {
+        let mut f = new_filter(80, 24);
+        // Start SB then flood without SE.
+        let mut input = vec![IAC, SB, OPT_TERMINAL_TYPE];
+        input.extend(std::iter::repeat_n(0x41u8, MAX_SB_LEN + 64));
+        let out = f.process(&input);
+        // Filter must not grow sb_buf past the cap; overflow aborts to Data
+        // so trailing bytes after the cap become plain data.
+        assert!(
+            f.sb_buf.len() <= MAX_SB_LEN,
+            "sb_buf grew to {}",
+            f.sb_buf.len()
+        );
+        // At least some of the overflow bytes should appear as data once
+        // the subneg was aborted.
+        assert!(
+            out.data.iter().any(|&b| b == 0x41),
+            "expected overflow bytes to become data after abort; data len={}",
+            out.data.len()
         );
     }
 

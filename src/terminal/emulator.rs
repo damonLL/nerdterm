@@ -17,8 +17,9 @@ impl TerminalEmulator {
 
     pub fn process(&mut self, data: &[u8]) {
         self.parser.process(data);
-        // Auto-scroll to bottom on new data
-        self.scroll_offset = 0;
+        // Sticky-bottom: only stay pinned to live output when the user is
+        // already at the bottom. Scrolling up leaves scroll_offset alone so
+        // streaming boards / keepalives don't yank the view back down.
     }
 
     /// Current cursor position as (row, col), 0-based. Used by the ANSI
@@ -112,5 +113,31 @@ mod tests {
         let screen = guard.screen();
         let (row, col) = screen.cursor_position();
         assert_eq!((row, col), (0, 5));
+    }
+
+    #[test]
+    fn process_does_not_reset_scroll_when_scrolled_up() {
+        let mut e = TerminalEmulator::new(24, 80, 1000);
+        for _ in 0..50 {
+            e.process(b"line\r\n");
+        }
+        e.scroll_up(10);
+        let offset = e.scroll_offset();
+        assert!(offset > 0);
+        e.process(b"more data\r\n");
+        assert_eq!(
+            e.scroll_offset(),
+            offset,
+            "inbound data must not snap scrollback to the bottom"
+        );
+    }
+
+    #[test]
+    fn process_keeps_offset_zero_when_at_bottom() {
+        let mut e = TerminalEmulator::new(24, 80, 1000);
+        e.process(b"hello\r\n");
+        assert_eq!(e.scroll_offset(), 0);
+        e.process(b"world\r\n");
+        assert_eq!(e.scroll_offset(), 0);
     }
 }

@@ -51,12 +51,17 @@ pub enum PopupField {
     Protocol,
     Username,
     TerminalType,
+    InputMode,
 }
 
 /// Sentinel shown at the head of the form popup's terminal-type cycle. When
 /// the user leaves it on this option, the entry stores `terminal_type: None`,
 /// which tells `App::connect` to fall back to whatever Settings says.
 const FORM_TERMINAL_TYPE_DEFAULT: &str = "(default)";
+
+/// Sentinel for the form popup's per-entry input-mode cycle. `None` on the
+/// entry means "auto" (SSH → character; telnet → settings, then WILL ECHO).
+const FORM_INPUT_MODE_DEFAULT: &str = "(default)";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FormMode {
@@ -90,9 +95,13 @@ pub struct FormPopup {
     pub username: String,
     pub terminal_type_options: Vec<String>,
     pub terminal_type_idx: usize,
+    /// Cycle index into `(default)` / `line` / `character`.
+    pub input_mode_idx: usize,
 }
 
 impl FormPopup {
+    const INPUT_MODE_OPTIONS: &[&'static str] = &[FORM_INPUT_MODE_DEFAULT, "line", "character"];
+
     pub fn new_add() -> Self {
         Self {
             mode: FormMode::Add,
@@ -104,6 +113,7 @@ impl FormPopup {
             username: String::new(),
             terminal_type_options: form_terminal_type_options(None),
             terminal_type_idx: 0,
+            input_mode_idx: 0,
         }
     }
 
@@ -112,6 +122,11 @@ impl FormPopup {
         let terminal_type_idx = match &entry.terminal_type {
             None => 0,
             Some(s) => options.iter().position(|o| o == s).unwrap_or(0),
+        };
+        let input_mode_idx = match entry.default_input_mode {
+            None => 0,
+            Some(InputMode::LineBuffered) => 1,
+            Some(InputMode::Character) => 2,
         };
         Self {
             mode: FormMode::Edit,
@@ -123,6 +138,7 @@ impl FormPopup {
             username: entry.username.clone().unwrap_or_default(),
             terminal_type_options: options,
             terminal_type_idx,
+            input_mode_idx,
         }
     }
 
@@ -133,18 +149,20 @@ impl FormPopup {
             PopupField::Port => PopupField::Protocol,
             PopupField::Protocol => PopupField::Username,
             PopupField::Username => PopupField::TerminalType,
-            PopupField::TerminalType => PopupField::Name,
+            PopupField::TerminalType => PopupField::InputMode,
+            PopupField::InputMode => PopupField::Name,
         };
     }
 
     pub fn prev_field(&mut self) {
         self.focused = match self.focused {
-            PopupField::Name => PopupField::TerminalType,
+            PopupField::Name => PopupField::InputMode,
             PopupField::Host => PopupField::Name,
             PopupField::Port => PopupField::Host,
             PopupField::Protocol => PopupField::Port,
             PopupField::Username => PopupField::Protocol,
             PopupField::TerminalType => PopupField::Username,
+            PopupField::InputMode => PopupField::TerminalType,
         };
     }
 
@@ -171,6 +189,22 @@ impl FormPopup {
         }
     }
 
+    pub fn cycle_input_mode(&mut self) {
+        self.input_mode_idx = (self.input_mode_idx + 1) % Self::INPUT_MODE_OPTIONS.len();
+    }
+
+    pub fn input_mode_label(&self) -> &str {
+        Self::INPUT_MODE_OPTIONS[self.input_mode_idx]
+    }
+
+    pub fn input_mode_override(&self) -> Option<InputMode> {
+        match self.input_mode_label() {
+            "line" => Some(InputMode::LineBuffered),
+            "character" => Some(InputMode::Character),
+            _ => None,
+        }
+    }
+
     pub fn type_char(&mut self, c: char) {
         if let Some(field) = self.text_field_mut() {
             field.push(c);
@@ -188,12 +222,18 @@ impl FormPopup {
             Protocol::Telnet => {
                 if self.port_str == "23" {
                     self.port_str = "22".into();
+                } else if self.port_str == "2323" {
+                    // modernbbs telnet → SSH preset
+                    self.port_str = "2222".into();
                 }
                 Protocol::Ssh
             }
             Protocol::Ssh => {
                 if self.port_str == "22" {
                     self.port_str = "23".into();
+                } else if self.port_str == "2222" {
+                    // modernbbs SSH → telnet preset
+                    self.port_str = "2323".into();
                 }
                 Protocol::Telnet
             }
@@ -216,6 +256,7 @@ impl FormPopup {
                 Some(self.username.clone())
             },
             terminal_type: self.terminal_type_override(),
+            default_input_mode: self.input_mode_override(),
         })
     }
 
@@ -225,7 +266,7 @@ impl FormPopup {
             PopupField::Host => Some(&mut self.host),
             PopupField::Port => Some(&mut self.port_str),
             PopupField::Username => Some(&mut self.username),
-            PopupField::Protocol | PopupField::TerminalType => None,
+            PopupField::Protocol | PopupField::TerminalType | PopupField::InputMode => None,
         }
     }
 }
@@ -379,6 +420,11 @@ pub struct AddressBookEntry {
     /// load as `None` thanks to `#[serde(default)]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_type: Option<String>,
+    /// Per-entry default input mode. `None` means auto: SSH starts in
+    /// character mode; telnet uses Settings and may switch to character when
+    /// the server negotiates WILL ECHO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_input_mode: Option<InputMode>,
 }
 
 fn default_protocol() -> Protocol {
@@ -411,6 +457,9 @@ pub struct App {
     ansi_query_scanner: AnsiQueryScanner,
     chord: ChordMode,
     shown_chord_hint: bool,
+    /// True once the user has Tab-toggled input mode this session. Suppresses
+    /// telnet WILL-ECHO auto-switch so we don't fight the user's choice.
+    input_mode_user_set: bool,
     quit: bool,
     width: u16,
     height: u16,
@@ -455,6 +504,7 @@ impl App {
             ansi_query_scanner: AnsiQueryScanner::new(),
             chord: ChordMode::Normal,
             shown_chord_hint: false,
+            input_mode_user_set: false,
             quit: false,
             width: 80,
             height: 24,
@@ -481,6 +531,28 @@ impl App {
         }
     }
 
+    /// Viewport size matching `ui/terminal_view` layout:
+    /// character mode = full height minus status bar; line mode also
+    /// subtracts the 3-row input bar.
+    pub fn terminal_viewport(&self) -> (u16, u16) {
+        let cols = self.width.max(1);
+        let chrome: u16 = match self.input_mode {
+            InputMode::Character => 1,    // status bar
+            InputMode::LineBuffered => 4, // status + input bar
+        };
+        let rows = self.height.saturating_sub(chrome).max(1);
+        (cols, rows)
+    }
+
+    /// Resize the local emulator and notify the peer (NAWS / SSH window_change).
+    async fn apply_viewport_to_connection(&mut self) {
+        let (cols, rows) = self.terminal_viewport();
+        self.emulator.resize(rows, cols);
+        if let Some(tx) = &self.connection_tx {
+            let _ = tx.send(ConnectionCommand::Resize(cols, rows)).await;
+        }
+    }
+
     pub fn resize(&mut self, width: u16, height: u16) {
         self.width = width;
         self.height = height;
@@ -496,10 +568,7 @@ impl App {
             CrosstermEvent::Mouse(mouse) => self.handle_mouse(mouse),
             CrosstermEvent::Resize(w, h) => {
                 self.resize(w, h);
-                // Send NAWS update to server if connected
-                if let Some(tx) = &self.connection_tx {
-                    let _ = tx.send(ConnectionCommand::Resize(w, h)).await;
-                }
+                self.apply_viewport_to_connection().await;
             }
             _ => {}
         }
@@ -610,6 +679,7 @@ impl App {
             KeyCode::Char(' ') if form.focused == PopupField::TerminalType => {
                 form.cycle_terminal_type()
             }
+            KeyCode::Char(' ') if form.focused == PopupField::InputMode => form.cycle_input_mode(),
             KeyCode::Char(c) => form.type_char(c),
             KeyCode::Backspace => form.backspace(),
             KeyCode::Enter => {
@@ -713,18 +783,21 @@ impl App {
                 if id != self.connection_id {
                     return Ok(());
                 }
-                // Detect ANSI query sequences (CPR / DSR / DA) before
-                // processing so we know whether to reply at all. The
-                // emulator still sees the full byte stream — vt100 treats
-                // these queries as no-ops to screen state.
+                // Detect ANSI query sequences (CPR / DSR / DA) with byte
+                // offsets so CPR can sample the cursor *at* each query, not
+                // after later cursor-moving output in the same read.
                 let queries = self.ansi_query_scanner.scan(&data);
-                // Process data even when viewing address book (session suspended)
-                self.emulator.process(&data);
-                if !queries.is_empty()
-                    && let Some(tx) = &self.connection_tx
-                {
-                    for q in queries {
-                        let response = match q {
+                // Process data even when viewing address book (session suspended),
+                // segmented at each query so cursor position is correct for CPR.
+                let mut pos = 0usize;
+                for detected in &queries {
+                    let end = detected.end.min(data.len());
+                    if end > pos {
+                        self.emulator.process(&data[pos..end]);
+                        pos = end;
+                    }
+                    if let Some(tx) = &self.connection_tx {
+                        let response = match detected.query {
                             AnsiQuery::CursorPositionReport => {
                                 let (row, col) = self.emulator.cursor_position();
                                 cpr_response(row, col)
@@ -735,6 +808,13 @@ impl App {
                         let _ = tx.send(ConnectionCommand::SendRaw(response)).await;
                     }
                 }
+                if pos < data.len() {
+                    self.emulator.process(&data[pos..]);
+                }
+
+                // Telnet WILL ECHO → character mode (unless the user Tab-toggled).
+                self.maybe_auto_switch_input_mode().await;
+
                 // Tee to capture file if active. Fail loud: any write error
                 // closes the file, flips the indicator off, and flashes a
                 // failure message that includes bytes saved + path.
@@ -909,6 +989,10 @@ impl App {
     async fn handle_key_connecting(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Esc {
             self.cancel_connection().await;
+            // Bump connection_id so a Connected event already queued for the
+            // aborted attempt is treated as stale (otherwise we flip back to
+            // Connected with a dead cmd_tx).
+            self.connection_id = self.connection_id.wrapping_add(1);
             self.state = AppState::AddressBook;
             self.status_message = "Connection cancelled".into();
         }
@@ -1028,12 +1112,14 @@ impl App {
             return Ok(());
         }
 
-        // Tab toggles input mode
+        // Tab toggles input mode — viewport chrome changes, so tell the peer.
         if key.code == KeyCode::Tab && key.modifiers.is_empty() {
             self.input_mode = match self.input_mode {
                 InputMode::LineBuffered => InputMode::Character,
                 InputMode::Character => InputMode::LineBuffered,
             };
+            self.input_mode_user_set = true;
+            self.apply_viewport_to_connection().await;
             return Ok(());
         }
 
@@ -1190,6 +1276,44 @@ impl App {
         Ok(())
     }
 
+    /// Pick the initial input mode for a new connection.
+    fn initial_input_mode_for(
+        entry: &AddressBookEntry,
+        settings: &config::settings::Settings,
+    ) -> InputMode {
+        if let Some(mode) = entry.default_input_mode {
+            return mode;
+        }
+        match entry.protocol {
+            // Interactive shells / full-screen apps expect raw keys.
+            Protocol::Ssh => InputMode::Character,
+            Protocol::Telnet => settings.default_input_mode,
+        }
+    }
+
+    /// If telnet negotiated server ECHO and the user hasn't Tab-toggled,
+    /// switch to character mode (and update NAWS for the new chrome).
+    async fn maybe_auto_switch_input_mode(&mut self) {
+        if self.input_mode_user_set || self.input_mode == InputMode::Character {
+            return;
+        }
+        // Honour an explicit per-entry line-mode override.
+        if let Some(idx) = self.connected_entry
+            && let Some(entry) = self.entries.get(idx)
+            && entry.default_input_mode == Some(InputMode::LineBuffered)
+        {
+            return;
+        }
+        let Some(flags) = &self.telnet_flags else {
+            return;
+        };
+        if !flags.server_echo.load(Ordering::Relaxed) {
+            return;
+        }
+        self.input_mode = InputMode::Character;
+        self.apply_viewport_to_connection().await;
+    }
+
     async fn connect(&mut self) -> Result<()> {
         let Some(entry) = self.entries.get(self.selected) else {
             return Ok(());
@@ -1200,6 +1324,7 @@ impl App {
         let protocol = entry.protocol;
         let username = entry.username.clone();
         let entry_terminal_type = entry.terminal_type.clone();
+        let initial_mode = Self::initial_input_mode_for(entry, &self.settings);
 
         // Cancel any existing connection
         self.cancel_connection().await;
@@ -1208,18 +1333,16 @@ impl App {
         self.state = AppState::Connecting;
         self.status_message = format!("Connecting to {}...", name);
         self.input.clear();
+        self.input_mode = initial_mode;
+        self.input_mode_user_set = false;
 
-        let term_height = self.height.saturating_sub(4);
-        let term_width = self.width.max(1);
+        let (cols, rows) = self.terminal_viewport();
         let scrollback = self.settings.scrollback_lines;
-        self.emulator = TerminalEmulator::new(term_height.max(1), term_width, scrollback);
-        self.input_mode = self.settings.default_input_mode;
+        self.emulator = TerminalEmulator::new(rows, cols, scrollback);
 
         let id = self.connection_id;
         let event_tx = self.event_tx.clone();
 
-        let cols = term_width;
-        let rows = term_height.max(1);
         let terminal_type =
             entry_terminal_type.unwrap_or_else(|| self.settings.terminal_type.clone());
         let handle = match protocol {
@@ -1290,6 +1413,7 @@ mod popup_tests {
             protocol: Protocol::Telnet,
             username: None,
             terminal_type: None,
+            default_input_mode: None,
         }
     }
 
@@ -1311,6 +1435,7 @@ mod popup_tests {
             PopupField::Protocol,
             PopupField::Username,
             PopupField::TerminalType,
+            PopupField::InputMode,
             PopupField::Name,
         ];
         for window in order.windows(2) {
@@ -1323,11 +1448,11 @@ mod popup_tests {
     #[test]
     fn prev_field_is_inverse_of_next() {
         let mut f = FormPopup::new_add();
-        for _ in 0..6 {
+        for _ in 0..7 {
             f.next_field();
         }
         assert_eq!(f.focused, PopupField::Name);
-        for _ in 0..6 {
+        for _ in 0..7 {
             f.prev_field();
         }
         assert_eq!(f.focused, PopupField::Name);
@@ -1367,6 +1492,7 @@ mod popup_tests {
             protocol: Protocol::Telnet,
             username: None,
             terminal_type: Some("rxvt-256color".into()),
+            default_input_mode: None,
         };
         let f = FormPopup::new_edit(&entry);
         assert_eq!(f.terminal_type_label(), "rxvt-256color");
@@ -1443,11 +1569,86 @@ mod popup_tests {
     }
 
     #[test]
+    fn toggle_protocol_swaps_modernbbs_ports() {
+        let mut f = FormPopup::new_add();
+        f.port_str = "2323".into();
+        f.toggle_protocol();
+        assert_eq!(f.protocol, Protocol::Ssh);
+        assert_eq!(f.port_str, "2222");
+        f.toggle_protocol();
+        assert_eq!(f.protocol, Protocol::Telnet);
+        assert_eq!(f.port_str, "2323");
+    }
+
+    #[test]
     fn toggle_protocol_preserves_custom_port() {
         let mut f = FormPopup::new_add();
         f.port_str = "9999".into();
         f.toggle_protocol();
         assert_eq!(f.port_str, "9999");
+    }
+
+    #[test]
+    fn form_popup_cycles_input_mode_and_to_entry() {
+        let mut f = FormPopup::new_add();
+        f.name = "n".into();
+        f.host = "h".into();
+        assert_eq!(f.input_mode_label(), FORM_INPUT_MODE_DEFAULT);
+        assert!(f.input_mode_override().is_none());
+        f.cycle_input_mode();
+        assert_eq!(f.input_mode_override(), Some(InputMode::LineBuffered));
+        f.cycle_input_mode();
+        assert_eq!(f.input_mode_override(), Some(InputMode::Character));
+        let entry = f.to_entry().unwrap();
+        assert_eq!(entry.default_input_mode, Some(InputMode::Character));
+    }
+
+    #[test]
+    fn initial_input_mode_ssh_defaults_to_character() {
+        let entry = AddressBookEntry {
+            name: "s".into(),
+            host: "h".into(),
+            port: 22,
+            protocol: Protocol::Ssh,
+            username: None,
+            terminal_type: None,
+            default_input_mode: None,
+        };
+        let settings = config::settings::Settings::default();
+        assert_eq!(
+            App::initial_input_mode_for(&entry, &settings),
+            InputMode::Character
+        );
+    }
+
+    #[test]
+    fn initial_input_mode_honours_entry_override() {
+        let entry = AddressBookEntry {
+            name: "s".into(),
+            host: "h".into(),
+            port: 22,
+            protocol: Protocol::Ssh,
+            username: None,
+            terminal_type: None,
+            default_input_mode: Some(InputMode::LineBuffered),
+        };
+        let settings = config::settings::Settings::default();
+        assert_eq!(
+            App::initial_input_mode_for(&entry, &settings),
+            InputMode::LineBuffered
+        );
+    }
+
+    #[test]
+    fn terminal_viewport_matches_input_mode_chrome() {
+        let (tx, _rx) = mpsc::channel(1);
+        let mut app = App::new(tx);
+        app.width = 80;
+        app.height = 24;
+        app.input_mode = InputMode::LineBuffered;
+        assert_eq!(app.terminal_viewport(), (80, 20)); // 24 - 4
+        app.input_mode = InputMode::Character;
+        assert_eq!(app.terminal_viewport(), (80, 23)); // 24 - 1
     }
 
     #[test]

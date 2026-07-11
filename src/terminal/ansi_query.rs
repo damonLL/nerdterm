@@ -19,6 +19,17 @@ pub enum AnsiQuery {
     PrimaryDeviceAttributes,
 }
 
+/// A query detected in a single `scan()` call, with the exclusive end offset
+/// of the final byte of the sequence within that buffer. Callers process the
+/// buffer in segments up to each `end` so CPR samples the cursor *at* the
+/// query, not after later cursor-moving output in the same read.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct DetectedQuery {
+    pub query: AnsiQuery,
+    /// Exclusive end index of the completed sequence in the scanned buffer.
+    pub end: usize,
+}
+
 enum State {
     Normal,
     AfterEsc,
@@ -38,9 +49,9 @@ impl AnsiQueryScanner {
 
     /// Feed bytes through the scanner. State persists across calls so
     /// sequences split across two `read()`s still match.
-    pub fn scan(&mut self, data: &[u8]) -> Vec<AnsiQuery> {
+    pub fn scan(&mut self, data: &[u8]) -> Vec<DetectedQuery> {
         let mut out = Vec::new();
-        for &b in data {
+        for (i, &b) in data.iter().enumerate() {
             self.state = match std::mem::replace(&mut self.state, State::Normal) {
                 State::Normal => {
                     if b == 0x1b {
@@ -67,7 +78,10 @@ impl AnsiQueryScanner {
                         State::InCsi { params }
                     } else if (0x40..=0x7e).contains(&b) {
                         if let Some(q) = match_query(&params, b) {
-                            out.push(q);
+                            out.push(DetectedQuery {
+                                query: q,
+                                end: i + 1,
+                            });
                         }
                         State::Normal
                     } else {
@@ -122,28 +136,44 @@ pub fn da_response() -> Vec<u8> {
 mod tests {
     use super::*;
 
+    fn queries_only(d: Vec<DetectedQuery>) -> Vec<AnsiQuery> {
+        d.into_iter().map(|d| d.query).collect()
+    }
+
     #[test]
     fn detects_cpr_query() {
         let mut s = AnsiQueryScanner::new();
-        assert_eq!(s.scan(b"\x1b[6n"), vec![AnsiQuery::CursorPositionReport]);
+        assert_eq!(
+            queries_only(s.scan(b"\x1b[6n")),
+            vec![AnsiQuery::CursorPositionReport]
+        );
     }
 
     #[test]
     fn detects_dsr_status_query() {
         let mut s = AnsiQueryScanner::new();
-        assert_eq!(s.scan(b"\x1b[5n"), vec![AnsiQuery::DeviceStatusOk]);
+        assert_eq!(
+            queries_only(s.scan(b"\x1b[5n")),
+            vec![AnsiQuery::DeviceStatusOk]
+        );
     }
 
     #[test]
     fn detects_da_query_no_param() {
         let mut s = AnsiQueryScanner::new();
-        assert_eq!(s.scan(b"\x1b[c"), vec![AnsiQuery::PrimaryDeviceAttributes],);
+        assert_eq!(
+            queries_only(s.scan(b"\x1b[c")),
+            vec![AnsiQuery::PrimaryDeviceAttributes],
+        );
     }
 
     #[test]
     fn detects_da_query_zero_param() {
         let mut s = AnsiQueryScanner::new();
-        assert_eq!(s.scan(b"\x1b[0c"), vec![AnsiQuery::PrimaryDeviceAttributes],);
+        assert_eq!(
+            queries_only(s.scan(b"\x1b[0c")),
+            vec![AnsiQuery::PrimaryDeviceAttributes],
+        );
     }
 
     #[test]
@@ -156,10 +186,11 @@ mod tests {
     #[test]
     fn detects_query_among_other_data() {
         let mut s = AnsiQueryScanner::new();
-        assert_eq!(
-            s.scan(b"hello\x1b[6nworld"),
-            vec![AnsiQuery::CursorPositionReport],
-        );
+        let hits = s.scan(b"hello\x1b[6nworld");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].query, AnsiQuery::CursorPositionReport);
+        // "hello" (5) + ESC [ 6 n (4) = 9
+        assert_eq!(hits[0].end, 9);
     }
 
     #[test]
@@ -168,16 +199,22 @@ mod tests {
         assert!(s.scan(b"\x1b").is_empty());
         assert!(s.scan(b"[").is_empty());
         assert!(s.scan(b"6").is_empty());
-        assert_eq!(s.scan(b"n"), vec![AnsiQuery::CursorPositionReport]);
+        let hits = s.scan(b"n");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].query, AnsiQuery::CursorPositionReport);
+        assert_eq!(hits[0].end, 1);
     }
 
     #[test]
     fn detects_multiple_queries_in_one_buffer() {
         let mut s = AnsiQueryScanner::new();
+        let hits = s.scan(b"\x1b[6n\x1b[5n");
         assert_eq!(
-            s.scan(b"\x1b[6n\x1b[5n"),
+            queries_only(hits.clone()),
             vec![AnsiQuery::CursorPositionReport, AnsiQuery::DeviceStatusOk,],
         );
+        assert_eq!(hits[0].end, 4); // ESC [ 6 n
+        assert_eq!(hits[1].end, 8); // + ESC [ 5 n
     }
 
     #[test]
@@ -205,7 +242,7 @@ mod tests {
         // Mid-sequence ESC must restart, not poison the next CSI.
         let mut s = AnsiQueryScanner::new();
         assert_eq!(
-            s.scan(b"\x1b[\x1b[6n"),
+            queries_only(s.scan(b"\x1b[\x1b[6n")),
             vec![AnsiQuery::CursorPositionReport],
         );
     }

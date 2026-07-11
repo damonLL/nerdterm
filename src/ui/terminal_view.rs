@@ -47,7 +47,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
     let mode_label = if char_mode { "CHAR" } else { "LINE" };
     let rest = format!(
-        " {}{} | [{}] Tab: mode | Shift+PgUp/Dn: scroll | Esc: disconnect",
+        " {}{} | [{}] Tab: mode | Shift+PgUp/Dn: scroll | Esc: suspend | Ctrl+D: disconnect | Ctrl+] ?: commands",
         app.status_message, scroll_info, mode_label,
     );
 
