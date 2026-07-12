@@ -511,6 +511,49 @@ impl App {
         }
     }
 
+    /// Build an App with fixed entries/settings and no disk I/O. Used by unit
+    /// tests that drive `handle_app_event` / key handling without a TTY.
+    #[cfg(test)]
+    fn new_for_test(
+        event_tx: mpsc::Sender<AppEvent>,
+        entries: Vec<AddressBookEntry>,
+        settings: config::settings::Settings,
+    ) -> Self {
+        let scrollback = settings.scrollback_lines;
+        let initial_mode = settings.default_input_mode;
+        Self {
+            state: AppState::AddressBook,
+            entries,
+            input_mode: initial_mode,
+            popup: None,
+            selected: 0,
+            connected_entry: None,
+            emulator: TerminalEmulator::new(24, 80, scrollback),
+            input: String::new(),
+            status_message: String::new(),
+            settings,
+            event_tx,
+            connection_tx: None,
+            telnet_flags: None,
+            history: Vec::new(),
+            history_index: None,
+            history_draft: String::new(),
+            char_input_len: 0,
+            connection_id: 0,
+            connection_handle: None,
+            password_reply: None,
+            host_key_reply: None,
+            capture: None,
+            ansi_query_scanner: AnsiQueryScanner::new(),
+            chord: ChordMode::Normal,
+            shown_chord_hint: true, // suppress one-shot hint noise in tests
+            input_mode_user_set: false,
+            quit: false,
+            width: 80,
+            height: 24,
+        }
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quit
     }
@@ -1763,5 +1806,405 @@ mod popup_tests {
         assert_eq!(out.default_input_mode, InputMode::Character);
         assert_eq!(out.terminal_type, "ansi");
         assert!(p.error.is_none());
+    }
+}
+
+/// Reliability tests for the App state machine. Drive `handle_app_event` and
+/// key handling through channels — no TTY required.
+#[cfg(test)]
+mod app_state_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use tokio::sync::mpsc;
+
+    fn sample_entry() -> AddressBookEntry {
+        AddressBookEntry {
+            name: "test".into(),
+            host: "localhost".into(),
+            port: 23,
+            protocol: Protocol::Telnet,
+            username: None,
+            terminal_type: None,
+            default_input_mode: None,
+        }
+    }
+
+    fn test_app(entries: Vec<AddressBookEntry>) -> (App, mpsc::Receiver<AppEvent>) {
+        let (event_tx, event_rx) = mpsc::channel(16);
+        let mut settings = config::settings::Settings::default();
+        // Line mode by default so WILL-ECHO auto-switch tests are meaningful.
+        settings.default_input_mode = InputMode::LineBuffered;
+        let app = App::new_for_test(event_tx, entries, settings);
+        (app, event_rx)
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// Put the app in Connected with a live cmd channel and optional telnet flags.
+    async fn simulate_connected(
+        app: &mut App,
+        id: u64,
+        flags: Option<Arc<TelnetFlags>>,
+    ) -> mpsc::Receiver<ConnectionCommand> {
+        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        app.connection_id = id;
+        app.selected = 0;
+        app.input_mode = InputMode::LineBuffered;
+        app.input_mode_user_set = false;
+        app.handle_app_event(AppEvent::Connected {
+            id,
+            cmd_tx,
+            telnet_flags: flags,
+        })
+        .await
+        .unwrap();
+        cmd_rx
+    }
+
+    fn drain_raw(rx: &mut mpsc::Receiver<ConnectionCommand>) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        while let Ok(cmd) = rx.try_recv() {
+            if let ConnectionCommand::SendRaw(b) = cmd {
+                out.push(b);
+            }
+        }
+        out
+    }
+
+    fn drain_resizes(rx: &mut mpsc::Receiver<ConnectionCommand>) -> Vec<(u16, u16)> {
+        let mut out = Vec::new();
+        while let Ok(cmd) = rx.try_recv() {
+            if let ConnectionCommand::Resize(c, r) = cmd {
+                out.push((c, r));
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn connected_with_matching_id_enters_connected_state() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        assert_eq!(app.state, AppState::Connected);
+        assert!(app.connection_tx.is_some());
+        assert_eq!(app.connected_entry, Some(0));
+        assert!(cmd_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_connected_event_is_ignored() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.connection_id = 5;
+        let (cmd_tx, _cmd_rx) = mpsc::channel(4);
+        app.handle_app_event(AppEvent::Connected {
+            id: 4, // stale
+            cmd_tx,
+            telnet_flags: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.state, AppState::AddressBook);
+        assert!(app.connection_tx.is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_network_data_does_not_update_emulator() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        let before = app.emulator.cursor_position();
+        app.handle_app_event(AppEvent::NetworkData {
+            id: 99,
+            data: b"hello".to_vec(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.emulator.cursor_position(), before);
+        assert!(drain_raw(&mut cmd_rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn matching_network_data_updates_emulator() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.handle_app_event(AppEvent::NetworkData {
+            id: 1,
+            data: b"hello".to_vec(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.emulator.cursor_position(), (0, 5));
+    }
+
+    #[tokio::test]
+    async fn disconnected_with_matching_id_clears_session() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.handle_app_event(AppEvent::Disconnected {
+            id: 1,
+            reason: Some("bye".into()),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.state, AppState::AddressBook);
+        assert!(app.connection_tx.is_none());
+        assert!(app.telnet_flags.is_none());
+        assert_eq!(app.connected_entry, None);
+        assert!(app.status_message.contains("bye"));
+    }
+
+    #[tokio::test]
+    async fn stale_disconnected_does_not_clear_live_session() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 2, None).await;
+        app.handle_app_event(AppEvent::Disconnected {
+            id: 1, // previous connection
+            reason: Some("old".into()),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.state, AppState::Connected);
+        assert!(app.connection_tx.is_some());
+        assert_eq!(app.connected_entry, Some(0));
+    }
+
+    #[tokio::test]
+    async fn esc_during_connecting_bumps_id_so_queued_connected_is_stale() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.connection_id = 7;
+        app.state = AppState::Connecting;
+
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Esc)))
+            .await
+            .unwrap();
+
+        assert_eq!(app.state, AppState::AddressBook);
+        assert_eq!(app.connection_id, 8);
+
+        let (cmd_tx, _cmd_rx) = mpsc::channel(4);
+        app.handle_app_event(AppEvent::Connected {
+            id: 7, // the aborted attempt
+            cmd_tx,
+            telnet_flags: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            app.state,
+            AppState::AddressBook,
+            "Connected for cancelled attempt must not revive the session"
+        );
+        assert!(app.connection_tx.is_none());
+    }
+
+    #[tokio::test]
+    async fn esc_while_connected_suspends_without_dropping_connection() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Esc)))
+            .await
+            .unwrap();
+
+        assert_eq!(app.state, AppState::AddressBook);
+        assert!(
+            app.connection_tx.is_some(),
+            "suspend must keep the network channel alive"
+        );
+        assert_eq!(app.connected_entry, Some(0));
+        assert!(app.status_message.to_lowercase().contains("suspend"));
+    }
+
+    #[tokio::test]
+    async fn cpr_samples_cursor_at_each_query_not_final_position() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+
+        // Home, CPR, print 'X', CPR — second CPR must see col 1 (1-based col 2).
+        let data = b"\x1b[1;1H\x1b[6nX\x1b[6n".to_vec();
+        app.handle_app_event(AppEvent::NetworkData { id: 1, data })
+            .await
+            .unwrap();
+
+        let replies = drain_raw(&mut cmd_rx);
+        assert_eq!(
+            replies.len(),
+            2,
+            "expected two CPR replies, got {replies:?}"
+        );
+        assert_eq!(replies[0], b"\x1b[1;1R", "first CPR at home");
+        assert_eq!(
+            replies[1], b"\x1b[1;2R",
+            "second CPR after 'X' must report advanced column"
+        );
+    }
+
+    #[tokio::test]
+    async fn will_echo_auto_switches_to_character_mode_and_sends_resize() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let flags = Arc::new(TelnetFlags::new());
+        let mut cmd_rx = simulate_connected(&mut app, 1, Some(flags.clone())).await;
+        assert_eq!(app.input_mode, InputMode::LineBuffered);
+
+        flags.server_echo.store(true, Ordering::Relaxed);
+        app.handle_app_event(AppEvent::NetworkData {
+            id: 1,
+            data: b"".to_vec(),
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Character);
+        let resizes = drain_resizes(&mut cmd_rx);
+        assert!(
+            !resizes.is_empty(),
+            "auto-switch to char mode must notify peer of new viewport"
+        );
+        let (cols, rows) = app.terminal_viewport();
+        assert_eq!(*resizes.last().unwrap(), (cols, rows));
+    }
+
+    #[tokio::test]
+    async fn user_tab_suppresses_will_echo_auto_switch() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let flags = Arc::new(TelnetFlags::new());
+        let mut cmd_rx = simulate_connected(&mut app, 1, Some(flags.clone())).await;
+
+        // Tab → Character, Tab → Line (user-owned choice).
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Tab)))
+            .await
+            .unwrap();
+        assert_eq!(app.input_mode, InputMode::Character);
+        assert!(app.input_mode_user_set);
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Tab)))
+            .await
+            .unwrap();
+        assert_eq!(app.input_mode, InputMode::LineBuffered);
+        let _ = drain_resizes(&mut cmd_rx);
+
+        flags.server_echo.store(true, Ordering::Relaxed);
+        app.handle_app_event(AppEvent::NetworkData {
+            id: 1,
+            data: b"x".to_vec(),
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            app.input_mode,
+            InputMode::LineBuffered,
+            "user Tab choice must not be overridden by WILL ECHO"
+        );
+    }
+
+    #[tokio::test]
+    async fn entry_line_mode_override_blocks_will_echo_auto_switch() {
+        let mut entry = sample_entry();
+        entry.default_input_mode = Some(InputMode::LineBuffered);
+        let (mut app, _erx) = test_app(vec![entry]);
+        let flags = Arc::new(TelnetFlags::new());
+        let _cmd_rx = simulate_connected(&mut app, 1, Some(flags.clone())).await;
+        // connected_entry set by Connected handler
+        assert_eq!(app.connected_entry, Some(0));
+
+        flags.server_echo.store(true, Ordering::Relaxed);
+        app.handle_app_event(AppEvent::NetworkData {
+            id: 1,
+            data: b"".to_vec(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.input_mode, InputMode::LineBuffered);
+    }
+
+    #[tokio::test]
+    async fn tab_toggle_sends_viewport_resize_matching_chrome() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.width = 80;
+        app.height = 24;
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        assert_eq!(app.input_mode, InputMode::LineBuffered);
+        assert_eq!(app.terminal_viewport(), (80, 20));
+
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Tab)))
+            .await
+            .unwrap();
+        assert_eq!(app.input_mode, InputMode::Character);
+        assert_eq!(app.terminal_viewport(), (80, 23));
+
+        let resizes = drain_resizes(&mut cmd_rx);
+        assert_eq!(resizes.last().copied(), Some((80, 23)));
+    }
+
+    #[tokio::test]
+    async fn terminal_resize_event_sends_viewport_not_raw_height() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.width = 80;
+        app.height = 24;
+        app.input_mode = InputMode::LineBuffered;
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+
+        app.handle_crossterm_event(CrosstermEvent::Resize(100, 40))
+            .await
+            .unwrap();
+        // Line mode chrome = 4 → rows 36, not raw 40.
+        let resizes = drain_resizes(&mut cmd_rx);
+        assert_eq!(resizes.last().copied(), Some((100, 36)));
+        assert_eq!(app.width, 100);
+        assert_eq!(app.height, 40);
+    }
+
+    #[tokio::test]
+    async fn password_needed_opens_popup_only_for_matching_id() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.connection_id = 3;
+        let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+        app.handle_app_event(AppEvent::PasswordNeeded {
+            id: 1,
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+        assert!(app.popup.is_none());
+
+        let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+        app.handle_app_event(AppEvent::PasswordNeeded {
+            id: 3,
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+        assert!(matches!(app.popup, Some(Popup::Password(_))));
+    }
+
+    #[tokio::test]
+    async fn host_key_mismatch_bumps_connection_id() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.connection_id = 10;
+        app.state = AppState::Connecting;
+        app.handle_app_event(AppEvent::HostKeyMismatch {
+            id: 10,
+            host: "h".into(),
+            port: 22,
+            key_type: "ssh-ed25519".into(),
+            stored_fingerprint: "a".into(),
+            received_fingerprint: "b".into(),
+            file_path: std::path::PathBuf::from("/tmp/kh"),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.connection_id, 11);
+        assert!(app.status_message.contains("HOST KEY MISMATCH"));
+        // Subsequent Disconnected for id 10 must not clobber the banner.
+        app.handle_app_event(AppEvent::Disconnected {
+            id: 10,
+            reason: Some("abort".into()),
+        })
+        .await
+        .unwrap();
+        assert!(app.status_message.contains("HOST KEY MISMATCH"));
     }
 }

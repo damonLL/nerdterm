@@ -302,6 +302,7 @@ impl TelnetFilter {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     fn new_filter(cols: u16, rows: u16) -> TelnetFilter {
         TelnetFilter::new(
@@ -422,6 +423,61 @@ mod tests {
             !response_str.contains("XTERM-256COLOR"),
             "default terminal type leaked through; response={:?}",
             out.response,
+        );
+    }
+
+    #[test]
+    fn will_echo_sets_server_echo_and_replies_do() {
+        let flags = Arc::new(TelnetFlags::new());
+        let mut f = TelnetFilter::new(80, 24, flags.clone(), "XTERM-256COLOR".into());
+        assert!(!flags.server_echo.load(Ordering::Relaxed));
+        let out = f.process(&[IAC, WILL, OPT_ECHO]);
+        assert!(flags.server_echo.load(Ordering::Relaxed));
+        assert!(
+            out.response.windows(3).any(|w| w == [IAC, DO, OPT_ECHO]),
+            "expected IAC DO ECHO, got {:?}",
+            out.response
+        );
+    }
+
+    #[test]
+    fn wont_echo_clears_server_echo() {
+        let flags = Arc::new(TelnetFlags::new());
+        let mut f = TelnetFilter::new(80, 24, flags.clone(), "XTERM-256COLOR".into());
+        let _ = f.process(&[IAC, WILL, OPT_ECHO]);
+        assert!(flags.server_echo.load(Ordering::Relaxed));
+        let _ = f.process(&[IAC, WONT, OPT_ECHO]);
+        assert!(!flags.server_echo.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn do_naws_enables_flag_and_sends_payload() {
+        let flags = Arc::new(TelnetFlags::new());
+        let mut f = TelnetFilter::new(80, 24, flags.clone(), "XTERM-256COLOR".into());
+        let out = f.process(&[IAC, DO, OPT_NAWS]);
+        assert!(flags.naws_enabled.load(Ordering::Relaxed));
+        assert!(naws_payload_present(&out.response, 80, 24));
+        assert!(
+            out.response.windows(3).any(|w| w == [IAC, WILL, OPT_NAWS]),
+            "expected IAC WILL NAWS"
+        );
+    }
+
+    #[test]
+    fn subneg_split_across_reads_still_responds() {
+        let mut f = new_filter(80, 24);
+        // IAC SB TT SEND in first chunk, IAC SE in second.
+        assert!(
+            f.process(&[IAC, SB, OPT_TERMINAL_TYPE, 1])
+                .response
+                .is_empty()
+        );
+        let out = f.process(&[IAC, SE]);
+        let s = String::from_utf8_lossy(&out.response);
+        assert!(
+            s.contains("XTERM-256COLOR"),
+            "split subneg must still answer; got {:?}",
+            out.response
         );
     }
 

@@ -140,4 +140,57 @@ mod tests {
         e.process(b"world\r\n");
         assert_eq!(e.scroll_offset(), 0);
     }
+
+    #[test]
+    fn resize_zero_dimensions_are_ignored() {
+        let mut e = TerminalEmulator::new(24, 80, 100);
+        e.resize(0, 80);
+        e.resize(24, 0);
+        e.resize(0, 0);
+        // Still the original size — process should not panic.
+        e.process(b"x");
+        assert_eq!(e.cursor_position(), (0, 1));
+    }
+
+    #[test]
+    fn resize_same_size_is_noop_different_size_applies() {
+        let mut e = TerminalEmulator::new(24, 80, 100);
+        e.resize(24, 80); // same
+        e.process(b"\x1b[1;1Hab");
+        assert_eq!(e.cursor_position(), (0, 2));
+        e.resize(12, 40);
+        // After resize the parser accepts the new geometry; writing still works.
+        e.process(b"z");
+        let (row, col) = e.cursor_position();
+        assert!(row < 12, "row {row} should be within new height");
+        assert!(col < 40, "col {col} should be within new width");
+    }
+
+    #[test]
+    fn scroll_up_overshoot_clamps_via_scroll_view() {
+        let mut e = TerminalEmulator::new(5, 40, 20);
+        for _ in 0..10 {
+            e.process(b"line\r\n");
+        }
+        e.scroll_up(10_000);
+        {
+            let _g = e.scroll_view();
+        }
+        // scroll_view reads vt100's clamped scrollback and stores it back.
+        assert!(
+            e.scroll_offset() <= 20,
+            "offset {} must clamp to available scrollback",
+            e.scroll_offset()
+        );
+    }
+
+    #[test]
+    fn size_probe_moves_cursor_before_cpr_sample() {
+        // Common BBS pattern: CUP to far corner then CPR.
+        let mut e = TerminalEmulator::new(24, 80, 100);
+        e.process(b"\x1b[999;999H");
+        let (row, col) = e.cursor_position();
+        // vt100 clamps to bottom-right (23, 79) 0-based.
+        assert_eq!((row, col), (23, 79));
+    }
 }

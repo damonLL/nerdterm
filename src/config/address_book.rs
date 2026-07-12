@@ -232,6 +232,46 @@ mod tests {
     }
 
     #[test]
+    fn defaults_include_modernbbs_ssh_and_telnet_presets() {
+        let dir = unique_tempdir();
+        let path = dir.join("nope.toml");
+        let entries = load_from(&path).entries;
+        let ssh = entries
+            .iter()
+            .find(|e| e.name.contains("modernbbs") && e.protocol == crate::app::Protocol::Ssh)
+            .expect("modernbbs SSH default");
+        assert_eq!(ssh.host, "localhost");
+        assert_eq!(ssh.port, 2222);
+        assert_eq!(
+            ssh.default_input_mode,
+            Some(crate::app::InputMode::Character)
+        );
+        let tel = entries
+            .iter()
+            .find(|e| e.name.contains("modernbbs") && e.protocol == crate::app::Protocol::Telnet)
+            .expect("modernbbs Telnet default");
+        assert_eq!(tel.port, 2323);
+        assert_eq!(
+            tel.default_input_mode,
+            Some(crate::app::InputMode::Character)
+        );
+    }
+
+    #[test]
+    fn default_input_mode_round_trips_through_save_load() {
+        let dir = unique_tempdir();
+        let path = dir.join("ab.toml");
+        let mut entries = sample_entries();
+        entries[0].default_input_mode = Some(crate::app::InputMode::Character);
+        save_to(&path, &entries).unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(
+            loaded.entries[0].default_input_mode,
+            Some(crate::app::InputMode::Character)
+        );
+    }
+
+    #[test]
     fn load_valid_file_returns_those_entries() {
         let dir = unique_tempdir();
         let path = dir.join("ab.toml");
