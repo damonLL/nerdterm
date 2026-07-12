@@ -1,10 +1,13 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use russh::client;
 use russh::keys::{PrivateKeyWithHashAlg, load_secret_key};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::events::{AppEvent, ConnectionCommand};
+use crate::network::CONNECT_TIMEOUT;
 
 struct SshHandler {
     host: String,
@@ -109,6 +112,34 @@ fn find_private_keys() -> Vec<Arc<russh::keys::PrivateKey>> {
     keys
 }
 
+/// Resolve the SSH login name. Prefer an explicit address-book username;
+/// otherwise use `$USER` / `$USERNAME`, never `root`.
+pub fn resolve_ssh_username(configured: Option<&str>) -> String {
+    if let Some(u) = configured.map(str::trim).filter(|s| !s.is_empty()) {
+        return u.to_string();
+    }
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "user".into())
+}
+
+async fn send_disconnect_once(
+    sent: &AtomicBool,
+    event_tx: &mpsc::Sender<AppEvent>,
+    connection_id: u64,
+    reason: Option<String>,
+) {
+    if sent.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = event_tx
+        .send(AppEvent::Disconnected {
+            id: connection_id,
+            reason,
+        })
+        .await;
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn connect_ssh(
     host: String,
@@ -119,6 +150,7 @@ pub async fn connect_ssh(
     connection_id: u64,
     event_tx: mpsc::Sender<AppEvent>,
     terminal_type: String,
+    cancel: CancellationToken,
 ) {
     let result = connect_ssh_inner(
         &host,
@@ -129,6 +161,7 @@ pub async fn connect_ssh(
         connection_id,
         &event_tx,
         &terminal_type,
+        cancel,
     )
     .await;
 
@@ -152,6 +185,7 @@ async fn connect_ssh_inner(
     connection_id: u64,
     event_tx: &mpsc::Sender<AppEvent>,
     terminal_type: &str,
+    cancel: CancellationToken,
 ) -> anyhow::Result<()> {
     let config = client::Config {
         ..Default::default()
@@ -163,27 +197,57 @@ async fn connect_ssh_inner(
         connection_id,
         event_tx: event_tx.clone(),
     };
-    let mut handle =
-        client::connect(Arc::new(config), format!("{}:{}", host, port), handler).await?;
 
-    let user = username.unwrap_or("root");
+    let addr = format!("{}:{}", host, port);
+    let mut handle = tokio::select! {
+        result = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            client::connect(Arc::new(config), addr, handler),
+        ) => {
+            match result {
+                Ok(Ok(h)) => h,
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    return Err(anyhow::anyhow!(
+                        "SSH connection to {}:{} timed out after {}s",
+                        host,
+                        port,
+                        CONNECT_TIMEOUT.as_secs()
+                    ));
+                }
+            }
+        }
+        _ = cancel.cancelled() => {
+            return Err(anyhow::anyhow!("Connection cancelled"));
+        }
+    };
+
+    if cancel.is_cancelled() {
+        return Err(anyhow::anyhow!("Connection cancelled"));
+    }
+
+    let user = resolve_ssh_username(username);
 
     // Try `none` auth first. BBSes and MUDs running embedded SSH servers
     // commonly accept `none` and handle login themselves in-channel after
     // the connection opens. OpenSSH's client does the same as its first
     // probe. If the server actually requires real auth this returns
     // failure and we fall through to keys → password.
-    let mut authenticated = match handle.authenticate_none(user).await {
+    let mut authenticated = match handle.authenticate_none(&user).await {
         Ok(result) => result.success(),
         Err(_) => false,
     };
+
+    if cancel.is_cancelled() {
+        return Err(anyhow::anyhow!("Connection cancelled"));
+    }
 
     // Try key-based auth next
     if !authenticated {
         let keys = find_private_keys();
         for key in keys {
             let key_with_hash = PrivateKeyWithHashAlg::new(key, None);
-            match handle.authenticate_publickey(user, key_with_hash).await {
+            match handle.authenticate_publickey(&user, key_with_hash).await {
                 Ok(result) if result.success() => {
                     authenticated = true;
                     break;
@@ -191,6 +255,10 @@ async fn connect_ssh_inner(
                 _ => continue,
             }
         }
+    }
+
+    if cancel.is_cancelled() {
+        return Err(anyhow::anyhow!("Connection cancelled"));
     }
 
     // If key auth failed, request password from UI
@@ -212,10 +280,10 @@ async fn connect_ssh_inner(
                 // Zeroizing copy still wipes the original allocation on drop.
                 let password = zeroize::Zeroizing::new(password);
                 let result = handle
-                    .authenticate_password(user, password.as_str().to_owned())
+                    .authenticate_password(&user, password.as_str().to_owned())
                     .await?;
                 if !result.success() {
-                    return Err(anyhow::anyhow!("Authentication failed"));
+                    return Err(anyhow::anyhow!("Authentication failed for user '{}'", user));
                 }
             }
             Err(_) => {
@@ -249,74 +317,102 @@ async fn connect_ssh_inner(
     // Split channel for concurrent read/write
     let (mut reader, writer) = channel.split();
 
+    // At most one Disconnected for this session (previously reader + writer
+    // each sent one and the second wiped capture-summary status).
+    let disconnect_sent = Arc::new(AtomicBool::new(false));
+
     // Writer task
-    let writer_event_tx = event_tx.clone();
-    let writer_id = connection_id;
-    tokio::spawn(async move {
-        while let Some(cmd) = cmd_rx.recv().await {
-            match cmd {
-                ConnectionCommand::SendText(text) => {
-                    if writer.data(text.as_bytes()).await.is_err() {
-                        break;
+    let writer_cancel = cancel.clone();
+    let writer_handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = writer_cancel.cancelled() => break,
+                cmd = cmd_rx.recv() => {
+                    match cmd {
+                        Some(ConnectionCommand::SendText(text)) => {
+                            if writer.data(text.as_bytes()).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(ConnectionCommand::SendRaw(data)) => {
+                            if writer.data(&data[..]).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(ConnectionCommand::Resize(new_cols, new_rows)) => {
+                            let _ = writer
+                                .window_change(new_cols as u32, new_rows as u32, 0, 0)
+                                .await;
+                        }
+                        Some(ConnectionCommand::Disconnect) | None => {
+                            let _ = writer.eof().await;
+                            let _ = writer.close().await;
+                            break;
+                        }
                     }
-                }
-                ConnectionCommand::SendRaw(data) => {
-                    if writer.data(&data[..]).await.is_err() {
-                        break;
-                    }
-                }
-                ConnectionCommand::Resize(new_cols, new_rows) => {
-                    let _ = writer
-                        .window_change(new_cols as u32, new_rows as u32, 0, 0)
-                        .await;
-                }
-                ConnectionCommand::Disconnect => {
-                    let _ = writer.eof().await;
-                    let _ = writer.close().await;
-                    break;
                 }
             }
         }
-        let _ = writer_event_tx
-            .send(AppEvent::Disconnected {
-                id: writer_id,
-                reason: None,
-            })
-            .await;
     });
 
-    // Reader loop
-    while let Some(msg) = reader.wait().await {
-        match msg {
-            russh::ChannelMsg::Data { data } => {
-                let _ = event_tx
-                    .send(AppEvent::NetworkData {
-                        id: connection_id,
-                        data: data.to_vec(),
-                    })
-                    .await;
+    // Reader loop — owns the single Disconnected event when the peer closes.
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            msg = reader.wait() => {
+                match msg {
+                    Some(russh::ChannelMsg::Data { data }) => {
+                        let _ = event_tx
+                            .send(AppEvent::NetworkData {
+                                id: connection_id,
+                                data: data.to_vec(),
+                            })
+                            .await;
+                    }
+                    Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
+                        let _ = event_tx
+                            .send(AppEvent::NetworkData {
+                                id: connection_id,
+                                data: data.to_vec(),
+                            })
+                            .await;
+                    }
+                    Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => {
+                        break;
+                    }
+                    Some(_) => {}
+                }
             }
-            russh::ChannelMsg::ExtendedData { data, .. } => {
-                let _ = event_tx
-                    .send(AppEvent::NetworkData {
-                        id: connection_id,
-                        data: data.to_vec(),
-                    })
-                    .await;
-            }
-            russh::ChannelMsg::Eof | russh::ChannelMsg::Close => {
-                break;
-            }
-            _ => {}
         }
     }
 
-    let _ = event_tx
-        .send(AppEvent::Disconnected {
-            id: connection_id,
-            reason: None,
-        })
-        .await;
+    cancel.cancel();
+    let _ = writer_handle.await;
+    send_disconnect_once(&disconnect_sent, event_tx, connection_id, None).await;
 
+    // Keep the session handle alive until both sides are done.
+    drop(handle);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_uses_configured_username() {
+        assert_eq!(resolve_ssh_username(Some("bbsuser")), "bbsuser");
+        assert_eq!(resolve_ssh_username(Some("  alice  ")), "alice");
+    }
+
+    #[test]
+    fn resolve_blank_or_none_is_not_root() {
+        let u = resolve_ssh_username(None);
+        assert_ne!(u, "root");
+        assert!(!u.is_empty());
+        let u2 = resolve_ssh_username(Some(""));
+        assert_ne!(u2, "root");
+        let u3 = resolve_ssh_username(Some("   "));
+        assert_ne!(u3, "root");
+    }
 }

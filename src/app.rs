@@ -16,6 +16,7 @@ use crate::terminal::ansi_query::{
     AnsiQuery, AnsiQueryScanner, cpr_response, da_response, dsr_ok_response,
 };
 use crate::terminal::emulator::TerminalEmulator;
+use tokio_util::sync::CancellationToken;
 
 /// Lines scrolled per Shift+PgUp/PgDn (and PgUp/PgDn in line-buffered mode).
 const KEY_SCROLL_LINES: usize = 10;
@@ -451,6 +452,8 @@ pub struct App {
     char_input_len: usize,        // tracks typed chars on current line in CHAR mode
     connection_id: u64,
     connection_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Shared cancel for every per-connection task (reader + writer + handshake).
+    connection_cancel: Option<CancellationToken>,
     password_reply: Option<tokio::sync::oneshot::Sender<String>>,
     host_key_reply: Option<tokio::sync::oneshot::Sender<bool>>,
     pub capture: Option<config::capture::CaptureFile>,
@@ -498,6 +501,7 @@ impl App {
             char_input_len: 0,
             connection_id: 0,
             connection_handle: None,
+            connection_cancel: None,
             password_reply: None,
             host_key_reply: None,
             capture: None,
@@ -541,6 +545,7 @@ impl App {
             char_input_len: 0,
             connection_id: 0,
             connection_handle: None,
+            connection_cancel: None,
             password_reply: None,
             host_key_reply: None,
             capture: None,
@@ -695,8 +700,25 @@ impl App {
     fn handle_key_delete_popup(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') if !self.entries.is_empty() => {
-                let name = self.entries[self.selected].name.clone();
-                self.entries.remove(self.selected);
+                let deleted = self.selected;
+                let name = self.entries[deleted].name.clone();
+
+                // `connected_entry` is a positional index — adjust or clear so
+                // the green marker / resume / capture stay attached to the
+                // live session (or drop it if that entry is gone).
+                if let Some(conn) = self.connected_entry {
+                    if conn == deleted {
+                        self.teardown_connection_sync();
+                        self.connected_entry = None;
+                        self.telnet_flags = None;
+                        // Bump id so any in-flight Connected/NetworkData is stale.
+                        self.connection_id = self.connection_id.wrapping_add(1);
+                    } else if deleted < conn {
+                        self.connected_entry = Some(conn - 1);
+                    }
+                }
+
+                self.entries.remove(deleted);
                 if self.selected >= self.entries.len() && self.selected > 0 {
                     self.selected -= 1;
                 }
@@ -892,6 +914,7 @@ impl App {
                 self.connection_tx = None;
                 self.telnet_flags = None;
                 self.connection_handle = None;
+                self.connection_cancel = None;
                 self.connected_entry = None;
                 self.status_message = match reason {
                     Some(err) => format!("Disconnected: {}", err),
@@ -1374,7 +1397,6 @@ impl App {
 
         self.connection_id += 1;
         self.state = AppState::Connecting;
-        self.status_message = format!("Connecting to {}...", name);
         self.input.clear();
         self.input_mode = initial_mode;
         self.input_mode_user_set = false;
@@ -1385,26 +1407,46 @@ impl App {
 
         let id = self.connection_id;
         let event_tx = self.event_tx.clone();
+        let cancel = CancellationToken::new();
+        self.connection_cancel = Some(cancel.clone());
 
         let terminal_type =
             entry_terminal_type.unwrap_or_else(|| self.settings.terminal_type.clone());
         let handle = match protocol {
-            Protocol::Telnet => tokio::spawn(async move {
-                network::connect_raw_tcp(host, port, cols, rows, id, event_tx, terminal_type).await;
-            }),
-            Protocol::Ssh => tokio::spawn(async move {
-                network::ssh::connect_ssh(
-                    host,
-                    port,
-                    username,
-                    cols,
-                    rows,
-                    id,
-                    event_tx,
-                    terminal_type,
-                )
-                .await;
-            }),
+            Protocol::Telnet => {
+                self.status_message = format!("Connecting to {}...", name);
+                tokio::spawn(async move {
+                    network::connect_raw_tcp(
+                        host,
+                        port,
+                        cols,
+                        rows,
+                        id,
+                        event_tx,
+                        terminal_type,
+                        cancel,
+                    )
+                    .await;
+                })
+            }
+            Protocol::Ssh => {
+                let resolved = network::ssh::resolve_ssh_username(username.as_deref());
+                self.status_message = format!("Connecting to {} as {}...", name, resolved);
+                tokio::spawn(async move {
+                    network::ssh::connect_ssh(
+                        host,
+                        port,
+                        username,
+                        cols,
+                        rows,
+                        id,
+                        event_tx,
+                        terminal_type,
+                        cancel,
+                    )
+                    .await;
+                })
+            }
         };
         self.connection_handle = Some(handle);
         Ok(())
@@ -1414,12 +1456,28 @@ impl App {
         self.cancel_connection().await;
     }
 
+    /// Drop network tasks without awaiting channel send (used from sync
+    /// delete path and as the core of `cancel_connection`).
+    fn teardown_connection_sync(&mut self) {
+        if let Some(token) = self.connection_cancel.take() {
+            token.cancel();
+        }
+        // Closing the cmd channel also unblocks the writer select.
+        self.connection_tx.take();
+        if let Some(handle) = self.connection_handle.take() {
+            handle.abort();
+        }
+    }
+
     async fn cancel_connection(&mut self) {
-        // Send disconnect command if we have an active connection
+        // Prefer a graceful Disconnect so the peer sees EOF when possible.
         if let Some(tx) = self.connection_tx.take() {
             let _ = tx.send(ConnectionCommand::Disconnect).await;
         }
-        // Abort the background task (cancels pending TCP connect too)
+        if let Some(token) = self.connection_cancel.take() {
+            token.cancel();
+        }
+        // Abort the outer task as a backstop for a stuck handshake.
         if let Some(handle) = self.connection_handle.take() {
             handle.abort();
         }
@@ -1845,6 +1903,7 @@ mod app_state_tests {
     }
 
     /// Put the app in Connected with a live cmd channel and optional telnet flags.
+    /// Uses the current `app.selected` as `connected_entry`.
     async fn simulate_connected(
         app: &mut App,
         id: u64,
@@ -1852,7 +1911,6 @@ mod app_state_tests {
     ) -> mpsc::Receiver<ConnectionCommand> {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         app.connection_id = id;
-        app.selected = 0;
         app.input_mode = InputMode::LineBuffered;
         app.input_mode_user_set = false;
         app.handle_app_event(AppEvent::Connected {
@@ -2206,5 +2264,95 @@ mod app_state_tests {
         .await
         .unwrap();
         assert!(app.status_message.contains("HOST KEY MISMATCH"));
+    }
+
+    fn two_entries() -> Vec<AddressBookEntry> {
+        vec![
+            AddressBookEntry {
+                name: "first".into(),
+                host: "a.example".into(),
+                port: 23,
+                protocol: Protocol::Telnet,
+                username: None,
+                terminal_type: None,
+                default_input_mode: None,
+            },
+            AddressBookEntry {
+                name: "second".into(),
+                host: "b.example".into(),
+                port: 23,
+                protocol: Protocol::Telnet,
+                username: None,
+                terminal_type: None,
+                default_input_mode: None,
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn delete_lower_index_decrements_connected_entry() {
+        let (mut app, _erx) = test_app(two_entries());
+        // Connect to the second entry (index 1).
+        app.selected = 1;
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        assert_eq!(app.connected_entry, Some(1));
+
+        // Suspend, select first entry, confirm delete.
+        app.state = AppState::AddressBook;
+        app.selected = 0;
+        app.popup = Some(Popup::DeleteConfirm);
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('y'))))
+            .await
+            .unwrap();
+
+        assert_eq!(app.entries.len(), 1);
+        assert_eq!(app.entries[0].name, "second");
+        assert_eq!(
+            app.connected_entry,
+            Some(0),
+            "connected index must slide down with the live entry"
+        );
+        assert!(
+            app.connection_tx.is_some(),
+            "session for the remaining entry must stay live"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_connected_entry_tears_down_session() {
+        let (mut app, _erx) = test_app(two_entries());
+        app.selected = 0;
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        let id_before = app.connection_id;
+
+        app.state = AppState::AddressBook;
+        app.selected = 0;
+        app.popup = Some(Popup::DeleteConfirm);
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('y'))))
+            .await
+            .unwrap();
+
+        assert_eq!(app.connected_entry, None);
+        assert!(app.connection_tx.is_none());
+        assert_eq!(app.connection_id, id_before.wrapping_add(1));
+        assert_eq!(app.entries.len(), 1);
+        assert_eq!(app.entries[0].name, "second");
+    }
+
+    #[tokio::test]
+    async fn cancel_connection_fires_cancellation_token() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let token = CancellationToken::new();
+        let child = token.child_token();
+        app.connection_cancel = Some(token);
+        let (cmd_tx, _cmd_rx) = mpsc::channel(4);
+        app.connection_tx = Some(cmd_tx);
+        app.connection_id = 3;
+
+        app.cancel_connection().await;
+
+        assert!(child.is_cancelled());
+        assert!(app.connection_cancel.is_none());
+        assert!(app.connection_tx.is_none());
     }
 }

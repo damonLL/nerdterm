@@ -158,7 +158,10 @@ impl TelnetFilter {
                     self.state = State::Data;
                 }
                 State::Dont => {
-                    // Acknowledge: server tells us not to — fine
+                    // Server revoked an option we were offering. Clear local
+                    // state and acknowledge with WONT so we stop acting on it
+                    // (e.g. NAWS resizes after DONT NAWS).
+                    self.handle_dont(byte, &mut response);
                     self.state = State::Data;
                 }
                 State::Sb => {
@@ -259,6 +262,25 @@ impl TelnetFilter {
             }
             // Decline everything else
             _ => {
+                response.extend_from_slice(&[IAC, WONT, option]);
+            }
+        }
+    }
+
+    fn handle_dont(&mut self, option: u8, response: &mut Vec<u8>) {
+        match option {
+            OPT_NAWS => {
+                self.naws_enabled = false;
+                self.flags
+                    .naws_enabled
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                response.extend_from_slice(&[IAC, WONT, OPT_NAWS]);
+            }
+            OPT_TERMINAL_TYPE => {
+                response.extend_from_slice(&[IAC, WONT, OPT_TERMINAL_TYPE]);
+            }
+            _ => {
+                // We never enabled it; still acknowledge.
                 response.extend_from_slice(&[IAC, WONT, option]);
             }
         }
@@ -424,6 +446,23 @@ mod tests {
             "default terminal type leaked through; response={:?}",
             out.response,
         );
+    }
+
+    #[test]
+    fn dont_naws_clears_flag_and_stops_resize_payloads() {
+        let flags = Arc::new(TelnetFlags::new());
+        let mut f = TelnetFilter::new(80, 24, flags.clone(), "XTERM-256COLOR".into());
+        let _ = f.process(&[IAC, DO, OPT_NAWS]);
+        assert!(flags.naws_enabled.load(Ordering::Relaxed));
+        let out = f.process(&[IAC, DONT, OPT_NAWS]);
+        assert!(!flags.naws_enabled.load(Ordering::Relaxed));
+        assert!(
+            out.response.windows(3).any(|w| w == [IAC, WONT, OPT_NAWS]),
+            "expected IAC WONT NAWS, got {:?}",
+            out.response
+        );
+        // Subsequent DO would re-enable; without DO, flag stays off.
+        assert!(!flags.naws_enabled.load(Ordering::Relaxed));
     }
 
     #[test]
