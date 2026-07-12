@@ -16,6 +16,14 @@ use telnet::{TelnetFilter, TelnetFlags};
 /// How long to wait for the TCP handshake before giving up.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Idle keepalive interval for both telnet (IAC NOP) and SSH. Boards and
+/// modernbbs often drop sessions after ~10 minutes with no client traffic.
+pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Telnet IAC NOP — a no-op command that resets many servers' idle timers
+/// without affecting the display stream.
+pub const TELNET_IAC_NOP: &[u8] = &[0xFF, 0xF1];
+
 /// Spawn a TCP connection with telnet protocol handling.
 /// All events are tagged with `connection_id` so the app can ignore stale ones.
 /// `cancel` tears down the reader and writer together when the user disconnects.
@@ -174,10 +182,19 @@ pub async fn connect_raw_tcp_with_timeout(
         }
     });
 
-    // Writer loop
+    // Writer loop — includes periodic IAC NOP so idle boards don't kick us.
+    let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Skip the immediate first tick; we only want periodics after connect.
+    keepalive.tick().await;
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
+            _ = keepalive.tick() => {
+                if writer.write_all(TELNET_IAC_NOP).await.is_err() {
+                    break;
+                }
+            }
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     ConnectionCommand::SendText(text) => {
@@ -297,6 +314,12 @@ mod tests {
                 "cancelled handshake must not report Connected"
             );
         }
+    }
+
+    #[test]
+    fn telnet_iac_nop_is_two_byte_sequence() {
+        assert_eq!(TELNET_IAC_NOP, &[0xFF, 0xF1]);
+        assert_eq!(KEEPALIVE_INTERVAL.as_secs(), 60);
     }
 
     #[tokio::test]

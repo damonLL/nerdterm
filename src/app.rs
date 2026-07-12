@@ -618,7 +618,91 @@ impl App {
                 self.resize(w, h);
                 self.apply_viewport_to_connection().await;
             }
+            CrosstermEvent::Paste(text) => self.handle_paste(text).await?,
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// Bracketed-paste payload from the terminal. Routes into the active
+    /// text field, password popup, or the live connection.
+    async fn handle_paste(&mut self, text: String) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        // Popups first — same priority as key handling.
+        match self.popup.as_mut() {
+            Some(Popup::Password(pw)) => {
+                // Strip newlines; password fields are single-line.
+                for c in text.chars() {
+                    if c != '\n' && c != '\r' {
+                        pw.push(c);
+                    }
+                }
+                return Ok(());
+            }
+            Some(Popup::Form(form)) => {
+                for c in text.chars() {
+                    if c != '\n' && c != '\r' {
+                        form.type_char(c);
+                    }
+                }
+                return Ok(());
+            }
+            Some(Popup::EditSettings(p)) if p.focused == SettingsField::Scrollback => {
+                for c in text.chars() {
+                    if c.is_ascii_digit() {
+                        p.scrollback_input.push(c);
+                    }
+                }
+                return Ok(());
+            }
+            Some(_) => return Ok(()), // other popups ignore paste
+            None => {}
+        }
+
+        match self.state {
+            AppState::Connected => match self.input_mode {
+                InputMode::LineBuffered => {
+                    for c in text.chars() {
+                        if c == '\n' || c == '\r' {
+                            // Ignore embedded newlines in line mode — user
+                            // hits Enter explicitly to send.
+                            continue;
+                        }
+                        self.input.push(c);
+                    }
+                    self.history_index = None;
+                }
+                InputMode::Character => {
+                    if let Some(tx) = &self.connection_tx {
+                        // Normalize line endings to CR LF for remote hosts.
+                        let mut bytes = Vec::with_capacity(text.len());
+                        let mut chars = text.chars().peekable();
+                        while let Some(c) = chars.next() {
+                            if c == '\r' {
+                                bytes.extend_from_slice(b"\r\n");
+                                if chars.peek() == Some(&'\n') {
+                                    chars.next();
+                                }
+                            } else if c == '\n' {
+                                bytes.extend_from_slice(b"\r\n");
+                            } else {
+                                let mut buf = [0u8; 4];
+                                bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                            }
+                        }
+                        if !bytes.is_empty() {
+                            if self.needs_local_echo() {
+                                self.emulator.process(&bytes);
+                            }
+                            let _ = tx.send(ConnectionCommand::SendRaw(bytes)).await;
+                        }
+                    }
+                }
+            },
+            AppState::AddressBook | AppState::Connecting => {}
         }
         Ok(())
     }
@@ -986,7 +1070,17 @@ impl App {
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        // Ctrl+C quits everywhere except character mode while connected —
+        // there ^C must reach the remote (SIGINT / break). Quit from a
+        // char-mode session with Ctrl+] q instead.
+        let in_char_session = self.state == AppState::Connected
+            && self.input_mode == InputMode::Character
+            && self.popup.is_none()
+            && self.chord == ChordMode::Normal;
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('c')
+            && !in_char_session
+        {
             self.disconnect().await;
             self.quit = true;
             return Ok(());
@@ -1136,6 +1230,11 @@ impl App {
             match key.code {
                 KeyCode::Char('l') | KeyCode::Char('L') => self.toggle_capture(),
                 KeyCode::Char('?') => self.popup = Some(Popup::ChordHelp),
+                KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    self.disconnect().await;
+                    self.connected_entry = None;
+                    self.quit = true;
+                }
                 // Esc cancels the chord with no flash; any other key is a
                 // mistype that we silently swallow rather than forwarding to
                 // the network (the user clearly intended a chord).
@@ -1148,6 +1247,7 @@ impl App {
         // Crossterm 0.28 in basic (non-kitty) mode reports raw 0x1D as
         // KeyCode::Char('5') + CONTROL (legacy ASCII mapping); kitty mode
         // reports it as KeyCode::Char(']'). Accept both.
+        // Always reserved (never forwarded) so local commands stay available.
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char(']') | KeyCode::Char('5'))
         {
@@ -1169,8 +1269,12 @@ impl App {
             return Ok(());
         }
 
-        // Ctrl+D: explicit disconnect
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+        // Ctrl+D: disconnect in line mode only. In character mode ^D is EOT
+        // and must reach the remote (EOF / logout prompts).
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('d')
+            && self.input_mode == InputMode::LineBuffered
+        {
             self.disconnect().await;
             self.connected_entry = None;
             self.state = AppState::AddressBook;
@@ -1288,8 +1392,14 @@ impl App {
         let (send, echo): (Option<Vec<u8>>, Option<Vec<u8>>) = match key.code {
             KeyCode::Char(c) => {
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    let ctrl = (c as u8).wrapping_sub(b'a').wrapping_add(1);
-                    (Some(vec![ctrl]), None)
+                    // Map Ctrl+A..Ctrl+Z → 0x01..0x1A (incl. ^C=3, ^D=4).
+                    let lower = c.to_ascii_lowercase();
+                    if lower.is_ascii_lowercase() {
+                        let ctrl = (lower as u8) - b'a' + 1;
+                        (Some(vec![ctrl]), None)
+                    } else {
+                        (None, None)
+                    }
                 } else {
                     self.char_input_len += 1;
                     let mut buf = [0u8; 4];
@@ -2461,5 +2571,127 @@ mod app_state_tests {
         assert_eq!(line, (80, 26)); // 30 - 4
         assert_eq!(ch, (80, 29)); // 30 - 1
         assert!(ch.1 > line.1);
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[tokio::test]
+    async fn char_mode_forwards_ctrl_c_and_ctrl_d_to_remote() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::Character;
+
+        app.handle_crossterm_event(CrosstermEvent::Key(ctrl('c')))
+            .await
+            .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(ctrl('d')))
+            .await
+            .unwrap();
+
+        let raw = drain_raw(&mut cmd_rx);
+        assert_eq!(raw, vec![vec![0x03], vec![0x04]]);
+        assert!(!app.should_quit());
+        assert_eq!(app.state, AppState::Connected);
+        assert!(app.connection_tx.is_some());
+    }
+
+    #[tokio::test]
+    async fn line_mode_ctrl_d_disconnects() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        assert_eq!(app.input_mode, InputMode::LineBuffered);
+
+        app.handle_crossterm_event(CrosstermEvent::Key(ctrl('d')))
+            .await
+            .unwrap();
+
+        assert_eq!(app.state, AppState::AddressBook);
+        assert!(app.connection_tx.is_none());
+        assert_eq!(app.connected_entry, None);
+    }
+
+    #[tokio::test]
+    async fn line_mode_ctrl_c_quits() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::LineBuffered;
+
+        app.handle_crossterm_event(CrosstermEvent::Key(ctrl('c')))
+            .await
+            .unwrap();
+
+        assert!(app.should_quit());
+    }
+
+    #[tokio::test]
+    async fn chord_q_quits_from_character_mode() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::Character;
+
+        // Ctrl+] then q
+        app.handle_crossterm_event(CrosstermEvent::Key(ctrl(']')))
+            .await
+            .unwrap();
+        assert_eq!(app.chord, ChordMode::Awaiting);
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('q'))))
+            .await
+            .unwrap();
+
+        assert!(app.should_quit());
+        assert!(app.connection_tx.is_none());
+    }
+
+    #[tokio::test]
+    async fn paste_into_line_mode_appends_to_input() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::LineBuffered;
+        app.input = "pre".into();
+
+        app.handle_crossterm_event(CrosstermEvent::Paste("hello\nworld".into()))
+            .await
+            .unwrap();
+
+        assert_eq!(app.input, "prehelloworld");
+    }
+
+    #[tokio::test]
+    async fn paste_into_char_mode_sends_normalized_raw() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::Character;
+
+        app.handle_crossterm_event(CrosstermEvent::Paste("ab\r\ncd\nef".into()))
+            .await
+            .unwrap();
+
+        let raw = drain_raw(&mut cmd_rx);
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0], b"ab\r\ncd\r\nef".to_vec());
+    }
+
+    #[tokio::test]
+    async fn paste_into_password_popup() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.connection_id = 1;
+        let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+        app.handle_app_event(AppEvent::PasswordNeeded {
+            id: 1,
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+
+        app.handle_crossterm_event(CrosstermEvent::Paste("s3cret\n".into()))
+            .await
+            .unwrap();
+
+        match &app.popup {
+            Some(Popup::Password(pw)) => assert_eq!(pw, "s3cret"),
+            _ => panic!("expected password popup"),
+        }
     }
 }

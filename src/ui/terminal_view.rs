@@ -8,7 +8,8 @@ use crate::app::{App, InputMode};
 
 /// Status-bar key hints shown while connected. Kept as a named constant so
 /// tests (and the bar itself) cannot drift out of sync with real bindings.
-pub const CONNECTED_KEY_HINTS: &str = "Esc: suspend | Ctrl+D: disconnect | Ctrl+] ?: commands";
+pub const CONNECTED_KEY_HINTS: &str =
+    "Esc: suspend | Ctrl+D: disconnect (line) | Ctrl+] q: quit | Ctrl+] ?: commands";
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -86,9 +87,10 @@ mod tests {
 
     #[test]
     fn connected_key_hints_match_real_bindings() {
-        // Esc suspends (does not disconnect); Ctrl+D disconnects; Ctrl+] is chord.
+        // Esc suspends; Ctrl+D disconnects in line mode; quit is a chord.
         assert!(CONNECTED_KEY_HINTS.contains("Esc: suspend"));
         assert!(CONNECTED_KEY_HINTS.contains("Ctrl+D: disconnect"));
+        assert!(CONNECTED_KEY_HINTS.contains("Ctrl+] q: quit"));
         assert!(CONNECTED_KEY_HINTS.contains("Ctrl+] ?: commands"));
         assert!(
             !CONNECTED_KEY_HINTS.contains("Esc: disconnect"),

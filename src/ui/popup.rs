@@ -27,7 +27,7 @@ pub fn draw(f: &mut Frame, popup: &Popup) {
 }
 
 fn draw_chord_help(f: &mut Frame) {
-    let area = centered_rect(48, 9, f.area());
+    let area = centered_rect(48, 11, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -46,6 +46,16 @@ fn draw_chord_help(f: &mut Frame) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("    Toggle session capture (log)"),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "q",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("    Quit nerdterm (disconnects)"),
         ]),
         Line::from(vec![
             Span::raw("  "),

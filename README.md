@@ -78,16 +78,18 @@ Or run directly with `cargo run --release`.
 |---|---|
 | `Tab` | Toggle line-buffered ↔ character mode |
 | `Esc` | Suspend session, return to address book (connection stays live) |
-| `Ctrl+D` | Disconnect |
-| `Ctrl+C` | Quit nerdterm (disconnects first) |
+| `Ctrl+D` | Disconnect (**line mode only** — in character mode `^D` is sent to the host) |
+| `Ctrl+C` | Quit nerdterm from line mode / address book; in **character mode** `^C` is sent to the host |
+| `Ctrl+] q` | Quit nerdterm (works in either mode; disconnects first) |
 | `Ctrl+] l` | Toggle session capture on/off |
 | `Ctrl+] ?` | Show the `Ctrl+]` chord help |
 | `Shift+PgUp` / `Shift+PgDn` | Scroll back/forward through scrollback (any mode) |
 | `PgUp` / `PgDn` | Scroll scrollback (line mode only — sent to the host in character mode) |
 | Mouse wheel | Scroll scrollback |
+| Paste | Bracketed paste into the line buffer, character stream, or password popup |
 
 In line mode: `↑`/`↓` browse command history, `Enter` sends the line.
-In character mode: arrows, function keys, and most `Ctrl+<x>` combos are sent raw. Three are reserved by the client and **not** forwarded to the host: `Ctrl+C` (quit), `Ctrl+D` (disconnect), and `Ctrl+]` (capture-chord prefix).
+In character mode: arrows, function keys, and `Ctrl+A`–`Ctrl+Z` (including `^C` / `^D`) are sent raw. Only `Ctrl+]` is reserved as the local-command chord prefix.
 
 ### Edit/Add popup
 

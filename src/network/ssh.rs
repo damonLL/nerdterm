@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::{AppEvent, ConnectionCommand};
-use crate::network::CONNECT_TIMEOUT;
+use crate::network::{CONNECT_TIMEOUT, KEEPALIVE_INTERVAL};
 
 struct SshHandler {
     host: String,
@@ -191,6 +191,10 @@ async fn connect_ssh_inner(
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
     let config = client::Config {
+        // Keep the session alive through long reads / suspended address-book
+        // browsing. modernbbs and many boards idle-kick after ~10 minutes.
+        keepalive_interval: Some(KEEPALIVE_INTERVAL),
+        keepalive_max: usize::MAX, // never give up on unanswered keepalives
         ..Default::default()
     };
 
