@@ -193,4 +193,24 @@ mod tests {
         // vt100 clamps to bottom-right (23, 79) 0-based.
         assert_eq!((row, col), (23, 79));
     }
+
+    #[test]
+    fn scroll_down_saturates_at_zero() {
+        let mut e = TerminalEmulator::new(24, 80, 100);
+        e.scroll_up(3);
+        e.scroll_down(100);
+        assert_eq!(e.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn scroll_up_then_down_returns_toward_bottom() {
+        let mut e = TerminalEmulator::new(24, 80, 1000);
+        for _ in 0..40 {
+            e.process(b"line\r\n");
+        }
+        e.scroll_up(10);
+        let mid = e.scroll_offset();
+        e.scroll_down(4);
+        assert_eq!(e.scroll_offset(), mid - 4);
+    }
 }

@@ -345,6 +345,52 @@ mod tests {
     }
 
     #[test]
+    fn build_naws_escapes_0xff_bytes_in_dimensions() {
+        // 255 = 0x00FF → high byte 0, low byte 0xFF which must be doubled as IAC IAC.
+        let payload = build_naws(255, 24);
+        // Structure: IAC SB NAWS 0x00 0xFF 0xFF 0x00 0x18 IAC SE
+        assert!(payload.starts_with(&[IAC, SB, OPT_NAWS]));
+        assert!(payload.ends_with(&[IAC, SE]));
+        // Find the doubled 0xFF for the cols low byte
+        let body = &payload[3..payload.len() - 2];
+        assert!(
+            body.windows(2).any(|w| w == [IAC, IAC]),
+            "0xFF dimension byte must be IAC-escaped; body={body:?}"
+        );
+    }
+
+    #[test]
+    fn escaped_iac_in_data_stream_is_literal_ff() {
+        let mut f = new_filter(80, 24);
+        let out = f.process(&[b'A', IAC, IAC, b'B']);
+        assert_eq!(out.data, vec![b'A', 0xFF, b'B']);
+        assert!(out.response.is_empty());
+    }
+
+    #[test]
+    fn will_sga_is_accepted_with_do() {
+        let mut f = new_filter(80, 24);
+        let out = f.process(&[IAC, WILL, OPT_SUPPRESS_GO_AHEAD]);
+        assert!(
+            out.response
+                .windows(3)
+                .any(|w| w == [IAC, DO, OPT_SUPPRESS_GO_AHEAD]),
+            "expected DO SGA, got {:?}",
+            out.response
+        );
+    }
+
+    #[test]
+    fn unknown_will_is_declined_with_dont() {
+        let mut f = new_filter(80, 24);
+        let out = f.process(&[IAC, WILL, 99]);
+        assert!(
+            out.response.windows(3).any(|w| w == [IAC, DONT, 99]),
+            "expected DONT for unknown option"
+        );
+    }
+
+    #[test]
     fn naws_response_uses_initial_dimensions() {
         let mut f = new_filter(132, 50);
         let out = f.process(&[IAC, DO, OPT_NAWS]);

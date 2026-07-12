@@ -5,6 +5,23 @@ use ratatui::{
 
 use crate::app::App;
 
+/// Format one address-book row (connected marker, protocol, name, host:port).
+/// Pure helper so list rendering stays testable without a full TUI.
+pub(crate) fn format_entry_line(
+    connected: bool,
+    protocol: crate::app::Protocol,
+    name: &str,
+    host: &str,
+    port: u16,
+) -> String {
+    let prefix = if connected { "* " } else { "  " };
+    let proto_tag = match protocol {
+        crate::app::Protocol::Telnet => "[TEL]",
+        crate::app::Protocol::Ssh => "[SSH]",
+    };
+    format!("{}{} {} - {}:{}", prefix, proto_tag, name, host, port)
+}
+
 /// Render a menu item with the hotkey highlighted.
 fn menu_item<'a>(key: &'a str, label: &'a str) -> Line<'a> {
     Line::from(vec![
@@ -62,12 +79,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .enumerate()
         .map(|(i, e)| {
             let connected = app.connected_entry == Some(i);
-            let prefix = if connected { "* " } else { "  " };
-            let proto_tag = match e.protocol {
-                crate::app::Protocol::Telnet => "[TEL]",
-                crate::app::Protocol::Ssh => "[SSH]",
-            };
-            let text = format!("{}{} {} - {}:{}", prefix, proto_tag, e.name, e.host, e.port);
+            let text = format_entry_line(connected, e.protocol, &e.name, &e.host, e.port);
             if connected {
                 ListItem::new(text).style(Style::default().fg(Color::Green))
             } else {
@@ -139,5 +151,23 @@ pub fn draw(f: &mut Frame, app: &App) {
             )
             .style(Style::default().fg(Color::Yellow));
         f.render_widget(status, chunks[3]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::Protocol;
+
+    #[test]
+    fn format_entry_line_marks_connected_and_protocol() {
+        assert_eq!(
+            format_entry_line(true, Protocol::Ssh, "modernbbs", "localhost", 2222),
+            "* [SSH] modernbbs - localhost:2222"
+        );
+        assert_eq!(
+            format_entry_line(false, Protocol::Telnet, "mud", "example.com", 4000),
+            "  [TEL] mud - example.com:4000"
+        );
     }
 }

@@ -1594,7 +1594,8 @@ impl App {
     }
 }
 
-fn f_key_escape(n: u8) -> Vec<u8> {
+/// ANSI sequences for F1–F12 (xterm). Exposed for unit tests.
+pub(crate) fn f_key_escape(n: u8) -> Vec<u8> {
     match n {
         1 => b"\x1bOP".to_vec(),
         2 => b"\x1bOQ".to_vec(),
@@ -1982,10 +1983,11 @@ mod popup_tests {
 #[cfg(test)]
 mod app_state_tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
     use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     fn sample_entry() -> AddressBookEntry {
         AddressBookEntry {
@@ -2693,5 +2695,422 @@ mod app_state_tests {
             Some(Popup::Password(pw)) => assert_eq!(pw, "s3cret"),
             _ => panic!("expected password popup"),
         }
+    }
+
+    #[tokio::test]
+    async fn empty_paste_is_noop() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::Character;
+        app.handle_crossterm_event(CrosstermEvent::Paste(String::new()))
+            .await
+            .unwrap();
+        assert!(drain_raw(&mut cmd_rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn paste_into_form_name_field() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.popup = Some(Popup::Form(FormPopup::new_add()));
+        app.handle_crossterm_event(CrosstermEvent::Paste("MyBBS\n".into()))
+            .await
+            .unwrap();
+        match &app.popup {
+            Some(Popup::Form(f)) => assert_eq!(f.name, "MyBBS"),
+            _ => panic!("expected form"),
+        }
+    }
+
+    #[tokio::test]
+    async fn line_mode_enter_sends_line_and_clears_input() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::LineBuffered;
+        app.input = "look".into();
+
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Enter)))
+            .await
+            .unwrap();
+
+        let mut texts = Vec::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            if let ConnectionCommand::SendText(t) = cmd {
+                texts.push(t);
+            }
+        }
+        assert_eq!(texts, vec!["look\r\n".to_string()]);
+        assert!(app.input.is_empty());
+        assert_eq!(app.history, vec!["look".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn line_mode_history_up_down_and_draft_restore() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::LineBuffered;
+        app.history = vec!["one".into(), "two".into()];
+        app.input = "draft".into();
+
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Up)))
+            .await
+            .unwrap();
+        assert_eq!(app.input, "two");
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Up)))
+            .await
+            .unwrap();
+        assert_eq!(app.input, "one");
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Down)))
+            .await
+            .unwrap();
+        assert_eq!(app.input, "two");
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Down)))
+            .await
+            .unwrap();
+        assert_eq!(app.input, "draft");
+        assert!(app.history_index.is_none());
+    }
+
+    #[tokio::test]
+    async fn line_mode_history_skips_consecutive_duplicates() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::LineBuffered;
+        for _ in 0..2 {
+            app.input = "same".into();
+            app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Enter)))
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.history, vec!["same".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn char_mode_sends_arrows_enter_backspace_and_f_keys() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::Character;
+
+        // Seed something to backspace
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('x'))))
+            .await
+            .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Backspace)))
+            .await
+            .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Enter)))
+            .await
+            .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Up)))
+            .await
+            .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::F(5))))
+            .await
+            .unwrap();
+
+        let raw = drain_raw(&mut cmd_rx);
+        assert_eq!(raw[0], b"x".to_vec());
+        assert_eq!(raw[1], vec![0x7F]); // DEL
+        assert_eq!(raw[2], b"\r\n".to_vec());
+        assert_eq!(raw[3], b"\x1b[A".to_vec());
+        assert_eq!(raw[4], f_key_escape(5));
+    }
+
+    #[tokio::test]
+    async fn char_mode_backspace_with_empty_buffer_sends_nothing() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::Character;
+        app.char_input_len = 0;
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Backspace)))
+            .await
+            .unwrap();
+        assert!(drain_raw(&mut cmd_rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn needs_local_echo_when_telnet_server_not_echoing() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let flags = Arc::new(TelnetFlags::new());
+        flags.server_echo.store(false, Ordering::Relaxed);
+        let mut cmd_rx = simulate_connected(&mut app, 1, Some(flags)).await;
+        app.input_mode = InputMode::Character;
+        let before = app.emulator.cursor_position();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('z'))))
+            .await
+            .unwrap();
+        // Local echo should advance cursor; also SendRaw went out.
+        assert_eq!(app.emulator.cursor_position(), (before.0, before.1 + 1));
+        assert_eq!(drain_raw(&mut cmd_rx), vec![b"z".to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn no_local_echo_when_server_echo_negotiated() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let flags = Arc::new(TelnetFlags::new());
+        flags.server_echo.store(true, Ordering::Relaxed);
+        let _cmd_rx = simulate_connected(&mut app, 1, Some(flags)).await;
+        app.input_mode = InputMode::Character;
+        let before = app.emulator.cursor_position();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('z'))))
+            .await
+            .unwrap();
+        assert_eq!(app.emulator.cursor_position(), before);
+    }
+
+    #[tokio::test]
+    async fn key_release_events_are_ignored() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::Character;
+        let mut release = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        app.handle_crossterm_event(CrosstermEvent::Key(release))
+            .await
+            .unwrap();
+        assert!(drain_raw(&mut cmd_rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn shift_pageup_scrolls_locally_in_char_mode() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.input_mode = InputMode::Character;
+        for _ in 0..40 {
+            app.emulator.process(b"line\r\n");
+        }
+        assert_eq!(app.emulator.scroll_offset(), 0);
+        let key_ev = KeyEvent::new(KeyCode::PageUp, KeyModifiers::SHIFT);
+        app.handle_crossterm_event(CrosstermEvent::Key(key_ev))
+            .await
+            .unwrap();
+        assert!(app.emulator.scroll_offset() > 0);
+        // Must not have been forwarded to the host.
+        assert!(drain_raw(&mut cmd_rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn mouse_wheel_scrolls_when_connected() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        for _ in 0..40 {
+            app.emulator.process(b"line\r\n");
+        }
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let mouse = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_crossterm_event(CrosstermEvent::Mouse(mouse))
+            .await
+            .unwrap();
+        assert!(app.emulator.scroll_offset() > 0);
+    }
+
+    #[tokio::test]
+    async fn host_key_trust_y_replies_true() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.connection_id = 1;
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        app.handle_app_event(AppEvent::HostKeyTrustNeeded {
+            id: 1,
+            host: "h".into(),
+            port: 22,
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:abc".into(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+        assert!(matches!(app.popup, Some(Popup::HostKeyTrust(_))));
+
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('y'))))
+            .await
+            .unwrap();
+        assert!(app.popup.is_none());
+        assert_eq!(reply_rx.await.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn host_key_trust_n_replies_false() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.connection_id = 1;
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        app.handle_app_event(AppEvent::HostKeyTrustNeeded {
+            id: 1,
+            host: "h".into(),
+            port: 22,
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:abc".into(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Esc)))
+            .await
+            .unwrap();
+        assert_eq!(reply_rx.await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn password_enter_sends_reply_esc_cancels() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.connection_id = 1;
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        app.handle_app_event(AppEvent::PasswordNeeded {
+            id: 1,
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('p'))))
+            .await
+            .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('w'))))
+            .await
+            .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Enter)))
+            .await
+            .unwrap();
+        assert_eq!(reply_rx.await.unwrap(), "pw");
+        assert!(app.popup.is_none());
+
+        // Esc cancels — reply channel closed
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<String>();
+        app.handle_app_event(AppEvent::PasswordNeeded {
+            id: 1,
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Esc)))
+            .await
+            .unwrap();
+        assert!(reply_rx.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn chord_question_opens_help_and_any_key_dismisses() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.handle_crossterm_event(CrosstermEvent::Key(ctrl(']')))
+            .await
+            .unwrap();
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('?'))))
+            .await
+            .unwrap();
+        assert!(matches!(app.popup, Some(Popup::ChordHelp)));
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Esc)))
+            .await
+            .unwrap();
+        assert!(app.popup.is_none());
+    }
+
+    #[tokio::test]
+    async fn address_book_j_k_move_selection() {
+        let (mut app, _erx) = test_app(two_entries());
+        assert_eq!(app.selected, 0);
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('j'))))
+            .await
+            .unwrap();
+        assert_eq!(app.selected, 1);
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('k'))))
+            .await
+            .unwrap();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[tokio::test]
+    async fn address_book_q_sets_quit() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('q'))))
+            .await
+            .unwrap();
+        assert!(app.should_quit());
+    }
+
+    #[tokio::test]
+    async fn network_data_tees_to_open_capture() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        let dir = std::env::temp_dir().join(format!(
+            "nerdterm-cap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cap = config::capture::open_in(&dir, "sess", "host", 23).unwrap();
+        let path = cap.path().to_path_buf();
+        app.capture = Some(cap);
+
+        app.handle_app_event(AppEvent::NetworkData {
+            id: 1,
+            data: b"hello-capture".to_vec(),
+        })
+        .await
+        .unwrap();
+
+        // Drop capture to flush
+        drop(app.capture.take());
+        let contents = std::fs::read(&path).unwrap();
+        assert!(
+            contents
+                .windows(b"hello-capture".len())
+                .any(|w| w == b"hello-capture"),
+            "capture file must contain teed network data"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn disconnected_with_open_capture_reports_path() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        let dir = std::env::temp_dir().join(format!(
+            "nerdterm-cap2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cap = config::capture::open_in(&dir, "s", "h", 1).unwrap();
+        app.capture = Some(cap);
+
+        app.handle_app_event(AppEvent::Disconnected {
+            id: 1,
+            reason: Some("peer closed".into()),
+        })
+        .await
+        .unwrap();
+
+        assert!(app.capture.is_none());
+        assert!(
+            app.status_message.contains("Capture stopped") || app.status_message.contains("saved"),
+            "status={}",
+            app.status_message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn f_key_escape_covers_f1_through_f12() {
+        assert_eq!(f_key_escape(1), b"\x1bOP");
+        assert_eq!(f_key_escape(4), b"\x1bOS");
+        assert_eq!(f_key_escape(5), b"\x1b[15~");
+        assert_eq!(f_key_escape(12), b"\x1b[24~");
+        assert!(f_key_escape(0).is_empty());
+        assert!(f_key_escape(13).is_empty());
+    }
+
+    #[test]
+    fn protocol_display_names() {
+        assert_eq!(Protocol::Telnet.to_string(), "Telnet");
+        assert_eq!(Protocol::Ssh.to_string(), "SSH");
     }
 }

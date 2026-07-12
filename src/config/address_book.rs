@@ -283,6 +283,36 @@ mod tests {
     }
 
     #[test]
+    fn load_present_but_empty_file_currently_reseeds_defaults() {
+        // Documents current behavior (open issue #9): a user-cleared book is
+        // indistinguishable from a missing file and gets the stock defaults.
+        let dir = unique_tempdir();
+        let path = dir.join("ab.toml");
+        fs::write(&path, "entries = []\n").unwrap();
+        let result = load_from(&path);
+        assert!(
+            !result.entries.is_empty(),
+            "empty file currently re-seeds defaults"
+        );
+        assert!(result.entries.iter().any(|e| e.name.contains("modernbbs")));
+    }
+
+    #[test]
+    fn username_round_trips_through_save_load() {
+        let dir = unique_tempdir();
+        let path = dir.join("ab.toml");
+        let mut entries = sample_entries();
+        entries[0].protocol = crate::app::Protocol::Ssh;
+        entries[0].username = Some("bbsuser".into());
+        entries[0].port = 2222;
+        save_to(&path, &entries).unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.entries[0].username.as_deref(), Some("bbsuser"));
+        assert_eq!(loaded.entries[0].protocol, crate::app::Protocol::Ssh);
+        assert_eq!(loaded.entries[0].port, 2222);
+    }
+
+    #[test]
     fn load_malformed_file_quarantines_and_warns() {
         let dir = unique_tempdir();
         let path = dir.join("ab.toml");
