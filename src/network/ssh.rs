@@ -123,7 +123,10 @@ pub fn resolve_ssh_username(configured: Option<&str>) -> String {
         .unwrap_or_else(|_| "user".into())
 }
 
-async fn send_disconnect_once(
+/// Emit at most one `Disconnected` for a session. Shared by reader/writer
+/// completion paths so a capture-summary status is not overwritten by a bare
+/// second "Disconnected".
+pub(crate) async fn send_disconnect_once(
     sent: &AtomicBool,
     event_tx: &mpsc::Sender<AppEvent>,
     connection_id: u64,
@@ -414,5 +417,26 @@ mod tests {
         assert_ne!(u2, "root");
         let u3 = resolve_ssh_username(Some("   "));
         assert_ne!(u3, "root");
+    }
+
+    #[tokio::test]
+    async fn send_disconnect_once_only_delivers_first_event() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let sent = AtomicBool::new(false);
+        send_disconnect_once(&sent, &tx, 9, Some("first".into())).await;
+        send_disconnect_once(&sent, &tx, 9, Some("second".into())).await;
+        send_disconnect_once(&sent, &tx, 9, None).await;
+
+        match rx.try_recv().unwrap() {
+            AppEvent::Disconnected {
+                id: 9,
+                reason: Some(r),
+            } => assert_eq!(r, "first"),
+            _ => panic!("unexpected first event (expected Disconnected first)"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "second and third Disconnected must be suppressed"
+        );
     }
 }

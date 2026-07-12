@@ -68,10 +68,14 @@ fn draw_chord_help(f: &mut Frame) {
     f.render_widget(paragraph, area);
 }
 
+/// Popup width for the host-key trust dialog. Must fit
+/// `  Fingerprint: SHA256:` + 43 base64 chars (~65 columns) without clipping.
+pub(crate) const HOST_KEY_TRUST_WIDTH: u16 = 78;
+
 fn draw_host_key_trust(f: &mut Frame, popup: &crate::app::HostKeyTrustPopup) {
     // Wide enough for `  Fingerprint: SHA256:` + 43 base64 chars (~65 cols)
     // plus long hostnames; wrap so nothing is clipped on smaller terminals.
-    let area = centered_rect(78, 12, f.area());
+    let area = centered_rect(HOST_KEY_TRUST_WIDTH, 12, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -497,5 +501,61 @@ fn draw_settings_field(
 
     if active && editable {
         f.set_cursor_position((lines[1].x + 1 + value.len() as u16, lines[1].y));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{HostKeyTrustPopup, Popup};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn buffer_text(backend: &TestBackend) -> String {
+        let buf = backend.buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn host_key_trust_width_fits_sha256_fingerprint_line() {
+        // `  Fingerprint: ` (15) + `SHA256:` (7) + 43 base64 = 65 columns.
+        let line = format!("  Fingerprint: SHA256:{}", "A".repeat(43));
+        assert_eq!(line.chars().count(), 65);
+        assert!(
+            HOST_KEY_TRUST_WIDTH as usize >= line.chars().count() + 2,
+            "popup width {} too narrow for fingerprint line of {}",
+            HOST_KEY_TRUST_WIDTH,
+            line.chars().count()
+        );
+    }
+
+    #[test]
+    fn host_key_trust_renders_full_fingerprint() {
+        let fp = format!("SHA256:{}", "B".repeat(43));
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let popup = Popup::HostKeyTrust(HostKeyTrustPopup {
+            host: "bbs.example.very-long-name.example".into(),
+            port: 2222,
+            key_type: "ssh-ed25519".into(),
+            fingerprint: fp.clone(),
+        });
+        terminal
+            .draw(|f| draw(f, &popup))
+            .expect("draw host key trust");
+        let text = buffer_text(terminal.backend());
+        assert!(
+            text.contains(fp.as_str()),
+            "full fingerprint must appear in the buffer (no clipping):\n{text}"
+        );
+        assert!(text.contains("bbs.example"));
+        assert!(text.contains("ssh-ed25519"));
     }
 }

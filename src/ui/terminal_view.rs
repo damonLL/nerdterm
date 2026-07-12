@@ -6,6 +6,10 @@ use tui_term::widget::PseudoTerminal;
 
 use crate::app::{App, InputMode};
 
+/// Status-bar key hints shown while connected. Kept as a named constant so
+/// tests (and the bar itself) cannot drift out of sync with real bindings.
+pub const CONNECTED_KEY_HINTS: &str = "Esc: suspend | Ctrl+D: disconnect | Ctrl+] ?: commands";
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let char_mode = app.input_mode == InputMode::Character;
@@ -47,8 +51,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
     let mode_label = if char_mode { "CHAR" } else { "LINE" };
     let rest = format!(
-        " {}{} | [{}] Tab: mode | Shift+PgUp/Dn: scroll | Esc: suspend | Ctrl+D: disconnect | Ctrl+] ?: commands",
-        app.status_message, scroll_info, mode_label,
+        " {}{} | [{}] Tab: mode | Shift+PgUp/Dn: scroll | {}",
+        app.status_message, scroll_info, mode_label, CONNECTED_KEY_HINTS,
     );
 
     let mut spans: Vec<Span> = Vec::new();
@@ -73,5 +77,22 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let cursor_x = (chunks[2].x + 3 + app.input.len() as u16)
             .min(chunks[2].x + chunks[2].width.saturating_sub(1));
         f.set_cursor_position((cursor_x, chunks[2].y + 1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connected_key_hints_match_real_bindings() {
+        // Esc suspends (does not disconnect); Ctrl+D disconnects; Ctrl+] is chord.
+        assert!(CONNECTED_KEY_HINTS.contains("Esc: suspend"));
+        assert!(CONNECTED_KEY_HINTS.contains("Ctrl+D: disconnect"));
+        assert!(CONNECTED_KEY_HINTS.contains("Ctrl+] ?: commands"));
+        assert!(
+            !CONNECTED_KEY_HINTS.contains("Esc: disconnect"),
+            "must not claim Esc disconnects"
+        );
     }
 }

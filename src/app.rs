@@ -2355,4 +2355,111 @@ mod app_state_tests {
         assert!(app.connection_cancel.is_none());
         assert!(app.connection_tx.is_none());
     }
+
+    #[tokio::test]
+    async fn delete_higher_index_leaves_connected_entry_unchanged() {
+        let (mut app, _erx) = test_app(two_entries());
+        app.selected = 0;
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        assert_eq!(app.connected_entry, Some(0));
+
+        app.state = AppState::AddressBook;
+        app.selected = 1; // delete the *other* entry
+        app.popup = Some(Popup::DeleteConfirm);
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Char('y'))))
+            .await
+            .unwrap();
+
+        assert_eq!(app.entries.len(), 1);
+        assert_eq!(app.entries[0].name, "first");
+        assert_eq!(app.connected_entry, Some(0));
+        assert!(app.connection_tx.is_some());
+    }
+
+    #[tokio::test]
+    async fn enter_on_connected_entry_resumes_suspended_session() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let _cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.state = AppState::AddressBook; // suspended
+        app.selected = 0;
+        assert_eq!(app.connected_entry, Some(0));
+
+        app.handle_crossterm_event(CrosstermEvent::Key(key(KeyCode::Enter)))
+            .await
+            .unwrap();
+
+        assert_eq!(app.state, AppState::Connected);
+        assert!(app.connection_tx.is_some());
+        assert!(app.status_message.contains("Connected"));
+    }
+
+    #[test]
+    fn initial_input_mode_telnet_uses_settings_when_no_override() {
+        let entry = AddressBookEntry {
+            name: "t".into(),
+            host: "h".into(),
+            port: 23,
+            protocol: Protocol::Telnet,
+            username: None,
+            terminal_type: None,
+            default_input_mode: None,
+        };
+        let mut settings = config::settings::Settings::default();
+        settings.default_input_mode = InputMode::Character;
+        assert_eq!(
+            App::initial_input_mode_for(&entry, &settings),
+            InputMode::Character
+        );
+        settings.default_input_mode = InputMode::LineBuffered;
+        assert_eq!(
+            App::initial_input_mode_for(&entry, &settings),
+            InputMode::LineBuffered
+        );
+    }
+
+    #[test]
+    fn form_edit_prefills_input_mode_override() {
+        let entry = AddressBookEntry {
+            name: "x".into(),
+            host: "h".into(),
+            port: 23,
+            protocol: Protocol::Telnet,
+            username: None,
+            terminal_type: None,
+            default_input_mode: Some(InputMode::Character),
+        };
+        let f = FormPopup::new_edit(&entry);
+        assert_eq!(f.input_mode_override(), Some(InputMode::Character));
+        assert_eq!(f.input_mode_label(), "character");
+    }
+
+    #[tokio::test]
+    async fn dsr_and_da_queries_get_replies() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        let mut cmd_rx = simulate_connected(&mut app, 1, None).await;
+        app.handle_app_event(AppEvent::NetworkData {
+            id: 1,
+            data: b"\x1b[5n\x1b[c".to_vec(),
+        })
+        .await
+        .unwrap();
+        let replies = drain_raw(&mut cmd_rx);
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0], b"\x1b[0n");
+        assert_eq!(replies[1], b"\x1b[?1;2c");
+    }
+
+    #[tokio::test]
+    async fn character_mode_connect_viewport_is_taller_than_line_mode() {
+        let (mut app, _erx) = test_app(vec![sample_entry()]);
+        app.width = 80;
+        app.height = 30;
+        app.input_mode = InputMode::LineBuffered;
+        let line = app.terminal_viewport();
+        app.input_mode = InputMode::Character;
+        let ch = app.terminal_viewport();
+        assert_eq!(line, (80, 26)); // 30 - 4
+        assert_eq!(ch, (80, 29)); // 30 - 1
+        assert!(ch.1 > line.1);
+    }
 }

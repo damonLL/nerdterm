@@ -30,9 +30,37 @@ pub async fn connect_raw_tcp(
     terminal_type: String,
     cancel: CancellationToken,
 ) {
+    connect_raw_tcp_with_timeout(
+        host,
+        port,
+        cols,
+        rows,
+        connection_id,
+        event_tx,
+        terminal_type,
+        cancel,
+        CONNECT_TIMEOUT,
+    )
+    .await;
+}
+
+/// Same as [`connect_raw_tcp`] with an injectable handshake timeout so tests
+/// can exercise the path without waiting the full production 30s.
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_raw_tcp_with_timeout(
+    host: String,
+    port: u16,
+    cols: u16,
+    rows: u16,
+    connection_id: u64,
+    event_tx: mpsc::Sender<AppEvent>,
+    terminal_type: String,
+    cancel: CancellationToken,
+    timeout: Duration,
+) {
     let addr = format!("{}:{}", host, port);
     let stream = tokio::select! {
-        result = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&addr)) => {
+        result = tokio::time::timeout(timeout, TcpStream::connect(&addr)) => {
             match result {
                 Ok(Ok(s)) => s,
                 Ok(Err(e)) => {
@@ -45,15 +73,26 @@ pub async fn connect_raw_tcp(
                     return;
                 }
                 Err(_) => {
+                    let secs = timeout.as_secs_f64();
+                    let reason = if secs >= 1.0 {
+                        format!(
+                            "Connection to {}:{} timed out after {}s",
+                            host,
+                            port,
+                            timeout.as_secs()
+                        )
+                    } else {
+                        format!(
+                            "Connection to {}:{} timed out after {:.0}ms",
+                            host,
+                            port,
+                            secs * 1000.0
+                        )
+                    };
                     let _ = event_tx
                         .send(AppEvent::Disconnected {
                             id: connection_id,
-                            reason: Some(format!(
-                                "Connection to {}:{} timed out after {}s",
-                                host,
-                                port,
-                                CONNECT_TIMEOUT.as_secs()
-                            )),
+                            reason: Some(reason),
                         })
                         .await;
                     return;
@@ -175,4 +214,123 @@ pub async fn connect_raw_tcp(
     cancel.cancel();
     drop(writer);
     let _ = reader_handle.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// TEST-NET-1 (RFC 5737) — unroutable; connect typically hangs until timeout
+    /// rather than failing immediately with "network unreachable".
+    const BLACKHOLE_HOST: &str = "192.0.2.1";
+
+    #[tokio::test]
+    async fn handshake_timeout_emits_disconnected_with_reason() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let cancel = CancellationToken::new();
+        connect_raw_tcp_with_timeout(
+            BLACKHOLE_HOST.into(),
+            9,
+            80,
+            24,
+            42,
+            tx,
+            "xterm".into(),
+            cancel,
+            Duration::from_millis(80),
+        )
+        .await;
+
+        let ev = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("event within 2s")
+            .expect("channel open");
+        match ev {
+            AppEvent::Disconnected {
+                id,
+                reason: Some(r),
+            } => {
+                assert_eq!(id, 42);
+                // Prefer a timeout message; some environments refuse the
+                // blackhole immediately — still a failed handshake, not Connected.
+                assert!(!r.is_empty(), "Disconnected reason must be non-empty");
+            }
+            AppEvent::Disconnected { id, reason: None } => {
+                panic!("expected reason for id {id}");
+            }
+            AppEvent::Connected { .. } => panic!("must not Connect on failed handshake"),
+            _ => panic!("expected Disconnected"),
+        }
+        // No further events (especially not Connected).
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn cancel_during_handshake_exits_without_connected() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let cancel = CancellationToken::new();
+        let cancel2 = cancel.clone();
+        // Cancel almost immediately so we don't wait on the blackhole.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            cancel2.cancel();
+        });
+        connect_raw_tcp_with_timeout(
+            BLACKHOLE_HOST.into(),
+            9,
+            80,
+            24,
+            7,
+            tx,
+            "xterm".into(),
+            cancel,
+            Duration::from_secs(30),
+        )
+        .await;
+
+        // Cancel path returns without sending Connected. A racing timeout/
+        // refuse Disconnected is acceptable; Connected is not.
+        while let Ok(ev) = rx.try_recv() {
+            assert!(
+                !matches!(ev, AppEvent::Connected { .. }),
+                "cancelled handshake must not report Connected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_refused_emits_disconnected() {
+        // Bind then drop so nothing is listening — connect fails fast with ECONNREFUSED.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let (tx, mut rx) = mpsc::channel(4);
+        let cancel = CancellationToken::new();
+        connect_raw_tcp_with_timeout(
+            "127.0.0.1".into(),
+            port,
+            80,
+            24,
+            3,
+            tx,
+            "xterm".into(),
+            cancel,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let ev = rx.recv().await.expect("Disconnected event");
+        match ev {
+            AppEvent::Disconnected {
+                id,
+                reason: Some(r),
+            } => {
+                assert_eq!(id, 3);
+                assert!(!r.is_empty());
+            }
+            _ => panic!("expected Disconnected with reason"),
+        }
+    }
 }

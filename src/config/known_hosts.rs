@@ -248,6 +248,17 @@ mod tests {
     }
 
     #[test]
+    fn verify_mismatch_on_new_algo_reports_existing_stored_fingerprint() {
+        let mut kh = KnownHosts::default();
+        kh.add(entry("h", 22, "ssh-ed25519", "SHA256:pinned"));
+        kh.add(entry("other", 22, "ssh-rsa", "SHA256:noise"));
+        match kh.verify("h", 22, "ssh-rsa", "SHA256:attacker") {
+            Verdict::Mismatch { stored } => assert_eq!(stored, "SHA256:pinned"),
+            other => panic!("expected Mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn verify_returns_mismatch_when_fingerprint_differs() {
         let mut kh = KnownHosts::default();
         kh.add(entry("h", 22, "ssh-ed25519", "SHA256:abc"));

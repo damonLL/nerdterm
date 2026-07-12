@@ -466,6 +466,18 @@ mod tests {
     }
 
     #[test]
+    fn do_naws_after_dont_re_enables() {
+        let flags = Arc::new(TelnetFlags::new());
+        let mut f = TelnetFilter::new(80, 24, flags.clone(), "XTERM-256COLOR".into());
+        let _ = f.process(&[IAC, DO, OPT_NAWS]);
+        let _ = f.process(&[IAC, DONT, OPT_NAWS]);
+        assert!(!flags.naws_enabled.load(Ordering::Relaxed));
+        let out = f.process(&[IAC, DO, OPT_NAWS]);
+        assert!(flags.naws_enabled.load(Ordering::Relaxed));
+        assert!(naws_payload_present(&out.response, 80, 24));
+    }
+
+    #[test]
     fn will_echo_sets_server_echo_and_replies_do() {
         let flags = Arc::new(TelnetFlags::new());
         let mut f = TelnetFilter::new(80, 24, flags.clone(), "XTERM-256COLOR".into());
